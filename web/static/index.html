@@ -1,1 +1,135 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generador B2B</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --tx:#1b1f24; --mut:#667085; --bd:#e2e5ea; --ok:#1a7f4b; --bad:#c62828; --acc:#2456d6; --warn:#b26a00; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --card:#1d2128; --tx:#e8eaed; --mut:#9aa3af; --bd:#2c323b; --ok:#4cc38a; --bad:#ff6b6b; --acc:#6c92f5; --warn:#e0a030; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:15px/1.5 system-ui,sans-serif; }
+  main { max-width:880px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:1.35rem; margin:0 0 4px; } p.sub { margin:0 0 20px; color:var(--mut); }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:0 0 12px; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:end; }
+  label { display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--mut); }
+  input[type=text], input[type=password], input[type=number] { padding:7px 9px; border:1px solid var(--bd); border-radius:6px; background:var(--bg); color:var(--tx); width:140px; font:inherit; }
+  label.chk { flex-direction:row; align-items:center; gap:8px; color:var(--tx); font-size:.9rem; }
+  button { padding:9px 18px; border:0; border-radius:6px; font:inherit; font-weight:600; cursor:pointer; color:#fff; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  #ini { background:var(--ok); } #det { background:var(--bad); }
+  .estado { display:inline-block; padding:3px 12px; border-radius:99px; font-weight:600; font-size:.85rem; border:1px solid var(--bd); }
+  .estado.corriendo { color:var(--ok); } .estado.calentando,.estado.deteniendo { color:var(--warn); } .estado.error { color:var(--bad); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .m b { display:block; font-size:1.4rem; font-variant-numeric:tabular-nums; } .m span { color:var(--mut); font-size:.8rem; }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; } td,th { text-align:left; padding:5px 8px; border-bottom:1px solid var(--bd); }
+  td.n,th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  pre { margin:0; max-height:220px; overflow:auto; font-size:.75rem; background:var(--bg); padding:10px; border-radius:6px; }
+  #msg { color:var(--mut); margin-top:10px; min-height:1.3em; } .err { color:var(--bad)!important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Generador de eventos B2B</h1>
+  <p class="sub">Inicia y detiene la emisión de eventos de fraude sintéticos (T1–T8).</p>
 
+  <div class="card">
+    <h2>Control</h2>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="dry" checked> Modo prueba (sin Azure)</label>
+      <label>Semilla <input type="number" id="seed" placeholder="aleatoria" min="0" step="1"></label>
+      <label>Horizonte (días) <input type="number" id="hor" placeholder="env" min="0" step="any"></label>
+      <label>Escala del reloj <input type="number" id="esc" placeholder="env" min="1" step="any"></label>
+      <label>Token <input type="password" id="tok" autocomplete="off"></label>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <button id="ini">▶ Iniciar</button>
+      <button id="det" disabled>■ Detener</button>
+      <span id="est" class="estado">…</span>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div class="card">
+    <h2>Progreso</h2>
+    <div class="grid">
+      <div class="m"><b id="m-ev">0</b><span>eventos emitidos</span></div>
+      <div class="m"><b id="m-fr">0</b><span>fraude real</span></div>
+      <div class="m"><b id="m-dias">0</b><span>días simulados</span></div>
+      <div class="m"><b id="m-seed">-</b><span>semilla (clic para reutilizar)</span></div>
+      <div class="m"><b id="m-ini" style="font-size:1rem">-</b><span>inicio simulado</span></div>
+      <div class="m"><b id="m-seg">0</b><span>segundos reales</span></div>
+      <div class="m"><b id="m-pub">0</b><span>publicados (features)</span></div>
+      <div class="m"><b id="m-no">0</b><span>no enviados</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Fraude y campañas por tipología</h2>
+    <table><thead><tr><th>Tipología</th><th class="n">Eventos de fraude</th><th class="n">Campañas</th></tr></thead><tbody id="tipos"></tbody></table>
+  </div>
+
+  <div class="card" id="vista" hidden>
+    <h2>Últimos eventos (solo modo prueba)</h2>
+    <pre id="pre"></pre>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n ?? 0).toLocaleString('es');
+$('m-seed').style.cursor = 'pointer';
+$('m-seed').onclick = () => { const v = $('m-seed').textContent; if (v !== '-') $('seed').value = v; };
+let tok = ''; try { tok = sessionStorage.getItem('tok') || ''; } catch (e) {}
+$('tok').value = tok;
+$('tok').addEventListener('input', e => { try { sessionStorage.setItem('tok', e.target.value); } catch (x) {} });
+
+async function api(ruta, metodo = 'GET', cuerpo) {
+  const h = { 'Content-Type': 'application/json' };
+  if ($('tok').value) h.Authorization = 'Bearer ' + $('tok').value;
+  const r = await fetch(ruta, { method: metodo, headers: h, body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.detail || r.statusText);
+  return j;
+}
+function num(id) { const v = $(id).value; return v === '' ? null : Number(v); }
+function aviso(t, mal) { $('msg').textContent = t; $('msg').className = mal ? 'err' : ''; }
+
+$('ini').onclick = async () => {
+  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
+  catch (e) { aviso(e.message, true); }
+};
+$('det').onclick = async () => {
+  try { aviso(''); await api('/api/detener', 'POST'); refrescar(); }
+  catch (e) { aviso(e.message, true); }
+};
+
+async function refrescar() {
+  try {
+    const s = await api('/api/estado');
+    const activa = ['calentando', 'corriendo', 'deteniendo'].includes(s.estado);
+    $('est').textContent = s.estado + (s.modo ? ' · ' + s.modo : '');
+    $('est').className = 'estado ' + s.estado;
+    $('ini').disabled = activa; $('det').disabled = !activa || s.estado === 'deteniendo';
+    if (s.mensaje && !$('msg').className) $('msg').textContent = s.mensaje;
+    const e = s.estadisticas || {}, p = s.publicacion || {};
+    $('m-ev').textContent = fmt(e.eventos_emitidos); $('m-fr').textContent = fmt(e.fraude_real_total);
+    $('m-seed').textContent = s.parametros?.seed ?? '-';
+    $('m-ini').textContent = (s.parametros?.inicio_simulado || '-').slice(0, 10);
+    $('m-dias').textContent = s.dias_simulados; $('m-seg').textContent = s.segundos_reales;
+    $('m-pub').textContent = fmt(p.features?.publicados);
+    $('m-no').textContent = fmt((p.features?.no_enviados || 0) + (p.ground_truth?.no_enviados || 0));
+    const f = e.fraude_real_por_tipologia || {}, c = e.campanas_lanzadas || {};
+    $('tipos').innerHTML = Object.keys({ ...f, ...c }).map(k => `<tr><td>${k}</td><td class="n">${fmt(f[k])}</td><td class="n">${fmt(c[k])}</td></tr>`).join('');
+    if (s.modo && s.modo.startsWith('prueba')) {
+      const r = await api('/api/recientes');
+      $('vista').hidden = false;
+      $('pre').textContent = (r.features || []).slice(-5).map(x => JSON.stringify(x)).join('\n');
+    }
+  } catch (e) { aviso(e.message, true); }
+}
+refrescar(); setInterval(refrescar, 2000);
+</script>
+</body>
+</html>
