@@ -1,0 +1,6 @@
+python-dotenv>=1.0
+jsonschema>=4.20
+azure-eventhub>=5.11
+azure-identity>=1.15
+fastapi>=0.110
+uvicorn>=0.29
