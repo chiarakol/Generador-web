@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: generador-b2b
+    runtime: docker
+    plan: starter            # el plan free se duerme sin trafico y mata la corrida
+    numInstances: 1          # el simulador vive en memoria: no escalar horizontalmente
+    healthCheckPath: /salud
+    envVars:
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: DRY_RUN
+        value: "true"
+      - key: EVENT_HUB_CONNECTION_STRING
+        sync: false          # nivel namespace, se carga a mano en el panel de Render
+      - key: EVENT_HUB_NAME_FEATURES
+        value: eventos-features
+      - key: EVENT_HUB_NAME_GROUND_TRUTH
+        value: eventos-ground-truth
+      - key: RELOJ_ESCALA
+        value: "3600"
+      - key: GENERATOR_INTERVAL_SECONDS
+        value: "2"
+      - key: HORIZONTE_DIAS
+        value: "182"
+      - key: WARMUP_DIAS
+        value: "60"
+      - key: SEED
+        value: "42"
