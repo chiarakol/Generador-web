@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tu-dominio/schemas/ground-truth-event-v2.json",
+  "title": "GroundTruthEvent v2",
+  "description": "Evento publicado en 'eventos-ground-truth'. Verdad de fondo por event_id, con RETRASO (timestamp_etiqueta > timestamp_evento) y RUIDO (es_fraude_etiquetado puede diferir de es_fraude_real). El detector entrena/evalua con es_fraude_etiquetado; es_fraude_real y el resto son solo para analisis offline. Nunca debe llegar al sistema de deteccion al clasificar.",
+  "type": "object",
+  "required": ["event_id", "schema_version", "timestamp_evento", "timestamp_etiqueta", "es_fraude_real",
+               "es_fraude_etiquetado", "tipologia", "variante", "campana_id", "fase_campana"],
+  "properties": {
+    "event_id": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "timestamp_evento": {"type": "string", "format": "date-time"},
+    "timestamp_etiqueta": {"type": "string", "format": "date-time"},
+    "es_fraude_real": {"type": "boolean"},
+    "es_fraude_etiquetado": {"type": "boolean"},
+    "tipologia": {
+      "type": ["string", "null"],
+      "enum": [null, "toma_de_cuenta", "proveedor_fantasma", "anillo_colusion", "fraccionamiento_ordenes",
+               "bust_out", "factura_inflada_duplicada", "bec_datos_bancarios", "cadena_fondos_paso"],
+      "description": "Tipologia de la CAMPANA a la que pertenece el evento (tambien en eventos no fraudulentos de la campana, p. ej. fase de construccion del bust-out). Para filtrar fraude real usar es_fraude_real."
+    },
+    "variante": {"type": ["string", "null"]},
+    "campana_id": {"type": ["string", "null"]},
+    "fase_campana": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

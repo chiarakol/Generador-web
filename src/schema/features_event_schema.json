@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tu-dominio/schemas/features-event-v2.json",
+  "title": "FeaturesEvent v2",
+  "description": "Evento publicado en 'eventos-features'. Un unico esquema para TODOS los eventos: ya no existe event_source ni bloques que dependan de la fuente. Los campos que no aplican a un tipo de evento van en null. NO contiene etiqueta (ver ground_truth_schema.json).",
+  "type": "object",
+  "required": ["event_id", "schema_version", "event_type", "timestamp", "comprador_id", "proveedor_id",
+               "cuenta_origen_id", "cuenta_destino_id", "monto", "moneda", "categoria", "canal",
+               "relacion_historica", "documento", "grafo", "dispositivo", "comportamiento", "proveedor",
+               "contexto_temporal", "geo", "saldo"],
+  "properties": {
+    "event_id": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "event_type": {"type": "string", "enum": ["compra", "pago", "transferencia", "cambio_datos_bancarios"]},
+    "timestamp": {"type": "string", "format": "date-time", "description": "Tiempo SIMULADO (no el instante de ingestion)."},
+    "comprador_id": {"type": "string"},
+    "proveedor_id": {"type": "string"},
+    "cuenta_origen_id": {"type": "string"},
+    "cuenta_destino_id": {"type": "string"},
+    "monto": {"type": "number", "minimum": 0, "description": "USD equivalente; 'moneda' es informativa (no se simula conversion)."},
+    "moneda": {"type": "string"},
+    "categoria": {"type": "string"},
+    "canal": {"type": "string", "enum": ["web", "api", "app_movil", "edi", "manual", "email", "llamada", "portal_proveedor"]},
+    "metodo_pago": {"type": ["string", "null"],
+                    "enum": [null, "contado", "credito_30", "credito_60", "credito_90", "carta_credito", "transferencia_bancaria"]},
+    "relacion_historica": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "fecha_primera_transaccion": {"type": ["string", "null"], "format": "date-time"},
+        "num_transacciones_previas": {"type": "integer", "minimum": 0},
+        "dias_desde_ultima_transaccion": {"type": ["number", "null"]},
+        "monto_promedio_historico": {"type": ["number", "null"]},
+        "desviacion_monto_categoria": {"type": "number"},
+        "limite_credito": {"type": ["number", "null"]},
+        "utilizacion_credito": {"type": ["number", "null"]},
+        "dias_atraso_acumulado": {"type": ["number", "null"]}
+      }
+    },
+    "documento": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "numero_orden_compra": {"type": ["string", "null"]},
+        "numero_factura": {"type": ["string", "null"]},
+        "tiene_oc_asociada": {"type": "boolean"},
+        "monto_oc": {"type": ["number", "null"]},
+        "diferencia_pct_factura_oc": {"type": ["number", "null"]},
+        "similitud_factura_max_30d": {"type": ["number", "null"]},
+        "razon_monto_limite_aprobacion": {"type": ["number", "null"]}
+      }
+    },
+    "grafo": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "grado_conectividad_comprador": {"type": "integer", "minimum": 0},
+        "grado_conectividad_proveedor": {"type": "integer", "minimum": 0},
+        "forma_parte_de_ciclo": {"type": "boolean"},
+        "longitud_ciclo_detectado": {"type": ["integer", "null"], "minimum": 2},
+        "reciprocidad": {"type": "number", "minimum": 0, "maximum": 1},
+        "atributos_compartidos_n": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    },
+    "dispositivo": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "tipo_dispositivo": {"type": "string", "enum": ["mobile", "desktop", "tablet", "integracion"]},
+        "dispositivo_reconocido": {"type": "boolean"},
+        "red_conexion": {"type": "string", "enum": ["corporativa", "vpn", "residencial", "movil", "anonimizada"]},
+        "autenticacion_reforzada": {"type": "boolean"},
+        "cambio_contacto_reciente": {"type": "boolean"}
+      }
+    },
+    "comportamiento": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "transacciones_recientes_comprador": {"type": "integer", "minimum": 0},
+        "proveedores_distintos_30d": {"type": "integer", "minimum": 0},
+        "ordenes_mismo_proveedor_72h": {"type": ["integer", "null"]},
+        "suma_vs_limite_72h": {"type": ["number", "null"]},
+        "razon_salida_entrada_24h": {"type": ["number", "null"]},
+        "horas_desde_ultima_entrada": {"type": ["number", "null"]}
+      }
+    },
+    "proveedor": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "antiguedad_dias": {"type": "number", "minimum": 0},
+        "compradores_distintos": {"type": "integer", "minimum": 0},
+        "cuenta_compartida_n": {"type": "integer", "minimum": 0},
+        "dias_desde_cambio_cuenta_destino": {"type": ["number", "null"]}
+      }
+    },
+    "contexto_temporal": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "hora_del_dia": {"type": "integer", "minimum": 0, "maximum": 23},
+        "es_fin_de_semana": {"type": "boolean"},
+        "es_horario_habitual": {"type": "boolean"}
+      }
+    },
+    "geo": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "pais_comprador": {"type": "string"},
+        "pais_proveedor": {"type": "string"},
+        "pais_cuenta_destino": {"type": "string"}
+      }
+    },
+    "saldo": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "saldo_origen_antes": {"type": ["number", "null"]},
+        "saldo_origen_despues": {"type": ["number", "null"]},
+        "saldo_destino_antes": {"type": ["number", "null"]},
+        "saldo_destino_despues": {"type": ["number", "null"]}
+      }
+    }
+  },
+  "additionalProperties": false
+}
