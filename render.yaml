@@ -2,7 +2,7 @@ services:
   - type: web
     name: generador-b2b
     runtime: docker
-    plan: starter            # el plan free se duerme sin trafico y mata la corrida
+    plan: free            # el plan free se duerme sin trafico y mata la corrida
     numInstances: 1          # el simulador vive en memoria: no escalar horizontalmente
     healthCheckPath: /salud
     envVars:
