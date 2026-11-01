@@ -41,7 +41,7 @@
       <label class="chk"><input type="checkbox" id="dry" checked> Modo prueba (sin Azure)</label>
       <label>Semilla <input type="number" id="seed" placeholder="aleatoria" min="0" step="1"></label>
       <label>Horizonte (días) <input type="number" id="hor" placeholder="env" min="0" step="any"></label>
-      <label>Escala del reloj <input type="number" id="esc" placeholder="env" min="1" step="any"></label>
+      <label>Escala del reloj <input type="number" value="3600" disabled readonly title="Fija en todas las corridas"></label>
       <label>Token <input type="password" id="tok" autocomplete="off"></label>
     </div>
     <div class="row" style="margin-top:14px">
@@ -97,7 +97,7 @@ function num(id) { const v = $(id).value; return v === '' ? null : Number(v); }
 function aviso(t, mal) { $('msg').textContent = t; $('msg').className = mal ? 'err' : ''; }
 
 $('ini').onclick = async () => {
-  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
+  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor') }); refrescar(); }
   catch (e) { aviso(e.message, true); }
 };
 $('det').onclick = async () => {
