@@ -112,6 +112,9 @@ class EventHubConfig:
     ground_truth_hub_name: str = os.getenv("EVENT_HUB_NAME_GROUND_TRUTH", "eventos-ground-truth")
 
 
+ESCALA_RELOJ: float = 3600.0  # constante del experimento; no modificable
+
+
 @dataclass
 class RelojConfig:
     # Fecha de inicio del tiempo simulado
@@ -119,7 +122,8 @@ class RelojConfig:
     # Segundos simulados por segundo real. 3600 = 1 s real equivale a 1 h simulada
     # (6 meses simulados ~ 73 min reales). Los jobs de Databricks deben usar
     # el MISMO valor (ver ESCALA_RELOJ en capa1_cal.py).
-    escala: float = _float("RELOJ_ESCALA", 3600.0)
+    # FIJO: no se lee de variables de entorno ni de la API/UI.
+    escala: float = ESCALA_RELOJ
     # Segundos reales entre lotes publicados (modo en vivo)
     intervalo_seg: float = _float("GENERATOR_INTERVAL_SECONDS", 2.0)
     # Horizonte simulado en dias (0 = sin limite, solo modo en vivo)
