@@ -44,7 +44,6 @@ class ParamsInicio(BaseModel):
     dry_run: bool = True
     seed: Optional[int] = None
     horizonte_dias: Optional[float] = Field(default=None, ge=0)
-    reloj_escala: Optional[float] = Field(default=None, gt=0)
     sim_start: Optional[str] = None  # ISO 8601; por defecto continua tras la corrida anterior
 
 
@@ -72,7 +71,7 @@ async def iniciar(p: ParamsInicio, authorization: Optional[str] = Header(default
         raise HTTPException(401, "Publicar a Event Hub exige configurar ADMIN_TOKEN y enviarlo.")
     try:
         corrida.iniciar(dry_run=p.dry_run, seed=p.seed, horizonte_dias=p.horizonte_dias,
-                        reloj_escala=p.reloj_escala, sim_start=p.sim_start)
+                        sim_start=p.sim_start)
     except ValueError:
         raise HTTPException(400, "sim_start no es una fecha ISO 8601 valida.")
     except RuntimeError as err:

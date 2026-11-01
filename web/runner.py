@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
-from src.config import config
+from src.config import ESCALA_RELOJ, config
 from src.main import _publicar, _validar_lote
 from src.producer.eventhub_producer import EventHubPublisher, Publisher, ResultadoPublicacion
 from src.simulador.motor import Simulador
@@ -90,7 +90,7 @@ class Corrida:
         return self._tarea is not None and not self._tarea.done()
 
     def iniciar(self, *, dry_run: bool, seed: Optional[int], horizonte_dias: Optional[float],
-                reloj_escala: Optional[float], sim_start: Optional[str] = None) -> None:
+                sim_start: Optional[str] = None) -> None:
         if self.activa:
             raise RuntimeError("Ya hay una corrida en curso; detenerla antes de iniciar otra.")
         cfg = copy.deepcopy(config)
@@ -100,8 +100,7 @@ class Corrida:
         cfg.generador.seed = seed if seed is not None else secrets.randbelow(2**31)
         if horizonte_dias is not None:
             cfg.reloj.horizonte_dias = horizonte_dias
-        if reloj_escala is not None:
-            cfg.reloj.escala = reloj_escala
+        cfg.reloj.escala = ESCALA_RELOJ  # fija en todas las corridas
         # Cada inicio arranca el tiempo simulado DESPUES del fin de la corrida anterior: el reloj
         # nunca retrocede (la ventana/watermark de CAL y la guardia as-of de CADS trabajan sobre
         # el timestamp simulado). Primera corrida: SIM_START del entorno, o `sim_start` explicito.
