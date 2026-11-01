@@ -2,7 +2,7 @@ services:
   - type: web
     name: generador-b2b
     runtime: docker
-    plan: free            # el plan free se duerme sin trafico y mata la corrida
+    plan: starter            # el plan free se duerme sin trafico y mata la corrida
     numInstances: 1          # el simulador vive en memoria: no escalar horizontalmente
     healthCheckPath: /salud
     envVars:
@@ -16,8 +16,6 @@ services:
         value: eventos-features
       - key: EVENT_HUB_NAME_GROUND_TRUTH
         value: eventos-ground-truth
-      - key: RELOJ_ESCALA
-        value: "3600"
       - key: GENERATOR_INTERVAL_SECONDS
         value: "2"
       - key: HORIZONTE_DIAS

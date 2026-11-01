@@ -18,6 +18,6 @@ Abrir http://localhost:8000. Sin `ADMIN_TOKEN` solo funciona el modo prueba (sin
 
 ## API
 - `GET /api/estado`, `GET /api/recientes`
-- `POST /api/iniciar` `{dry_run, seed, horizonte_dias, reloj_escala}` (Bearer `ADMIN_TOKEN`)
+- `POST /api/iniciar` `{dry_run, seed, horizonte_dias}` (el reloj es fijo en 3600) (Bearer `ADMIN_TOKEN`)
 - `POST /api/detener` (Bearer `ADMIN_TOKEN`) — vacia las etiquetas pendientes de ground truth antes de cerrar.
 - Un reinicio o redespliegue de Render detiene la corrida (SIGTERM → parada ordenada).
