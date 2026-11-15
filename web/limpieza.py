@@ -43,6 +43,16 @@ def _ahora() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def rutas_conservar(entorno: str) -> set:
+    """Rutas en snapshots que la limpieza respeta y que CADS necesita para arrancar."""
+    crudo = os.getenv("LIMPIEZA_CONSERVAR", "").strip()
+    nombres = [n.strip() for n in crudo.split(",") if n.strip()] if crudo else list(CONSERVAR_DEFECTO)
+    for n in nombres:
+        if "/" in n or n in (".", ".."):
+            raise ErrorLimpieza(f"LIMPIEZA_CONSERVAR solo admite nombres de archivo, no rutas: {n!r}")
+    return {f"{entorno}/{n}" for n in nombres}
+
+
 class ErrorLimpieza(RuntimeError):
     """Paso fallido: la limpieza se detiene y se informa; es idempotente, se puede repetir."""
 
@@ -81,12 +91,7 @@ class Limpieza:
 
     def conservar(self, entorno: str) -> set:
         """Rutas completas (en snapshots) que la limpieza respeta."""
-        crudo = os.getenv("LIMPIEZA_CONSERVAR", "").strip()
-        nombres = [n.strip() for n in crudo.split(",") if n.strip()] if crudo else list(CONSERVAR_DEFECTO)
-        for n in nombres:
-            if "/" in n or n in (".", ".."):
-                raise ErrorLimpieza(f"LIMPIEZA_CONSERVAR solo admite nombres de archivo, no rutas: {n!r}")
-        return {f"{entorno}/{n}" for n in nombres}
+        return rutas_conservar(entorno)
 
     def _contenedor_real(self, nombre: str):
         from azure.storage.blob import ContainerClient

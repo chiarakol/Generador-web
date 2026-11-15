@@ -110,6 +110,20 @@ def _exigir_token_estricto(authorization: Optional[str]) -> None:
         raise HTTPException(401, "Token invalido o ausente.")
 
 
+@app.get("/api/prechequeo")
+async def prechequeo(authorization: Optional[str] = Header(default=None)):
+    """Solo lectura: comprueba si el pipeline esta listo ANTES de iniciar. Usa credenciales de Azure y
+    Databricks, por eso exige el token cuando hay ADMIN_TOKEN. Es un aviso: no bloquea iniciar."""
+    if ADMIN_TOKEN and not _autenticado(authorization):
+        raise HTTPException(401, "Token invalido o ausente.")
+    try:
+        return await corrida.prechequeo.ejecutar()
+    except RuntimeError as err:
+        raise HTTPException(409, str(err))
+    except ValueError as err:  # configuracion de entorno invalida
+        raise HTTPException(500, str(err))
+
+
 @app.post("/api/limpiar")
 async def limpiar(c: Confirmacion, authorization: Optional[str] = Header(default=None)):
     _exigir_token_estricto(authorization)

@@ -24,6 +24,7 @@ from web.databricks import (MENSAJE_SIN_AZURE, azure_habilitado, crear_clientes_
                             pausar_todos_async)
 from web.lectores import entorno_desde_env
 from web.limpieza import Limpieza
+from web.prechequeo import Prechequeo
 from web.persistencia import crear_almacen
 
 # Holgura entre el fin de una corrida y el inicio simulado de la siguiente.
@@ -76,6 +77,7 @@ class Corrida:
         self._tarea_drenado: Optional[asyncio.Task] = None
         self._almacen = crear_almacen()
         self.limpieza = Limpieza()
+        self.prechequeo = Prechequeo()
         self.limpieza.validar_arranque()  # falla fuerte al arrancar si LIMPIEZA_* es invalida
         parametros_desde_entorno()  # falla fuerte al arrancar si DRENADO_* es invalida
         # Pausa del job: apagada por defecto. Con DRENADO_PAUSAR=true exige las variables de Databricks.
