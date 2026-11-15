@@ -167,6 +167,7 @@ function pintarDrenado(d) {
 const PASOS_TXT = { pausar_jobs: 'Pausar jobs y cancelar runs', borrar_delta: 'Borrar contenedor delta', borrar_snapshots: 'Borrar contenedor snapshots',
   borrar_redis: 'Borrar claves de Redis', verificar: 'Verificar que no quede nada' };
 const ICONO = { pendiente: '·', en_curso: '⏳', ok: '✔', omitido: '⚠', error: '✘' };
+let msgAccion = '';  // resultado del ultimo clic (error o aviso); el refresco automatico NO debe borrarlo
 function pintarLimpieza(l, bloqueado) {
   $('limp').hidden = !l || !l.configurada;
   if (!l || !l.configurada) return;
@@ -182,6 +183,7 @@ function pintarLimpieza(l, bloqueado) {
     $('l-pasos').appendChild(d);
   });
   const txt = [];
+  if (msgAccion) txt.push(msgAccion);
   if (e?.fase === 'limpio') txt.push('Entorno limpio. Ya puede levantar el job streaming y luego iniciar la corrida.');
   if (e?.fase === 'limpio_parcial') txt.push('⚠ Limpieza parcial: Redis se omitió (no configurado o inalcanzable). Si existe, límpielo a mano.');
   if (e?.fase === 'error') txt.push('✘ La limpieza se detuvo por un error (arriba). Es repetible; no dé el entorno por limpio.');
@@ -190,13 +192,13 @@ function pintarLimpieza(l, bloqueado) {
 }
 $('l-btn').onclick = async () => {
   if (!confirm('Esto BORRA el entorno de forma irreversible. ¿Continuar?')) return;
-  try { $('l-msg').textContent = ''; await api('/api/limpiar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
-  catch (e) { $('l-msg').textContent = '✘ ' + e.message; }
+  try { msgAccion = ''; await api('/api/limpiar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
+  catch (e) { msgAccion = '✘ ' + e.message; refrescar(); }
 };
 $('l-job').onclick = async () => {
   if (!confirm('Esto lanza el job streaming (gasta crédito de Databricks). ¿Continuar?')) return;
-  try { $('l-msg').textContent = ''; await api('/api/job/lanzar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
-  catch (e) { $('l-msg').textContent = '✘ ' + e.message; }
+  try { msgAccion = ''; await api('/api/job/lanzar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
+  catch (e) { msgAccion = '✘ ' + e.message; refrescar(); }
 };
 
 async function refrescar() {
