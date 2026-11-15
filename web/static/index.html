@@ -41,7 +41,7 @@
       <label class="chk"><input type="checkbox" id="dry" checked> Modo prueba (sin Azure)</label>
       <label>Semilla <input type="number" id="seed" placeholder="aleatoria" min="0" step="1"></label>
       <label>Horizonte (días) <input type="number" id="hor" placeholder="env" min="0" step="any"></label>
-      <label>Escala del reloj <input type="number" id="esc" placeholder="env" min="1" step="any"></label>
+      <label title="Fija: debe coincidir con la escala del job CAL en Databricks (3600). No se puede editar.">Escala del reloj (fija) <input type="number" id="esc" value="3600" disabled></label>
       <label>Token <input type="password" id="tok" autocomplete="off"></label>
     </div>
     <div class="row" style="margin-top:14px">
@@ -145,7 +145,7 @@ $('ini').onclick = async () => {
   if (advInicio) avisos.push(advInicio);
   if (!$('dry').checked) avisos.push(...(await verificarPipeline()));  // solo al publicar a Event Hub
   if (avisos.length && !confirm('⚠ Antes de iniciar:\n\n' + avisos.map(a => '• ' + a).join('\n') + '\n\n¿Iniciar de todos modos? (si los streams aún no leen, los eventos publicados se perderán)')) return;
-  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
+  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: null }); refrescar(); }
   catch (e) { aviso(e.message, true); }
 };
 
@@ -165,9 +165,9 @@ function pintarDrenado(d) {
   $('d-hu').textContent = v(l.huerfanos); $('d-pe').textContent = v(l.pendientes);
   const c = l.condiciones, ok = x => x === null ? 'n/d' : (x ? '✔' : '✘');
   const txt = [];
-  if (c) txt.push(`a) CADS = F ${ok(c.a_cads_igual_F)} · b) evaluadas estable ${ok(c.b_evaluadas_estable)} · c) pendientes ≈ 0 ${ok(c.c_pendientes_cero)}`);
+  if (c) txt.push(`a) CADS = F ${ok(c.a_cads_igual_F)} · b) evaluadas estable ${ok(c.b_evaluadas_estable)} · c) pendientes ${c.c_modo === 'cero' ? '≈ 0' : 'estables'} ${ok(c.c_pendientes ?? c.c_pendientes_cero)}`);
   else if (d.fase === 'verificando_drenado') txt.push('Esperando una segunda lectura para evaluar condiciones…');
-  txt.push('Lecturas: ' + (d.lecturas || []).length);
+  txt.push('Lecturas: ' + (d.lecturas || []).length + (d.lecturas_requeridas ? ` · estables seguidas: ${d.lecturas_estables || 0} de ${d.lecturas_requeridas}` : ''));
   const b = d.baseline;
   if (b) {
     txt.push(`Baseline previo: CADS ${fmt(b.cads)}, evaluadas ${fmt(b.evaluadas)}, pendientes ${b.pendientes === null ? 'n/d' : fmt(b.pendientes)} (se descuentan de CADS y evaluadas)`);
