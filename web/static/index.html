@@ -171,15 +171,21 @@ function pintarDrenado(d) {
 const PASOS_TXT = { pausar_jobs: 'Pausar jobs y cancelar runs', borrar_delta: 'Borrar contenedor delta', borrar_snapshots: 'Borrar contenedor snapshots',
   borrar_redis: 'Borrar claves de Redis', verificar: 'Verificar que no quede nada' };
 const ICONO = { pendiente: '·', en_curso: '⏳', ok: '✔', omitido: '⚠', error: '✘' };
+let ultLimp = null, ultBloq = false, azureOk = true;  // para repintar al cambiar la casilla de modo prueba
 let msgAccion = '';  // resultado del ultimo clic (error o aviso); el refresco automatico NO debe borrarlo
 function pintarLimpieza(l, bloqueado) {
-  $('limp').hidden = !l || !l.configurada;
-  if (!l || !l.configurada) return;
+  ultLimp = l; ultBloq = bloqueado;
+  $('limp').hidden = !l || !l.configurada || !azureOk;
+  if (!l || !l.configurada || !azureOk) return;
+  const prueba = $('dry').checked;  // modo prueba: no se opera sobre Azure
   const e = l.estado, limpiando = e?.fase === 'limpiando';
   const frase = l.entorno === 'tesis' ? 'BORRAR TESIS' : (l.entorno || '?');
   $('l-ent').textContent = '(entorno: ' + (l.entorno || 'no definido') + ')';
   $('l-frase').textContent = frase;
-  $('l-btn').disabled = limpiando || bloqueado; $('l-job').disabled = limpiando || bloqueado;
+  const off = limpiando || bloqueado || prueba;
+  $('l-btn').disabled = off; $('l-job').disabled = off;
+  const why = prueba ? "Desmarque 'Modo prueba' para operar sobre Azure" : '';
+  $('l-btn').title = why; $('l-job').title = why;
   $('l-pasos').textContent = '';
   (e?.pasos || []).forEach(p => {
     const d = document.createElement('div');
@@ -187,6 +193,7 @@ function pintarLimpieza(l, bloqueado) {
     $('l-pasos').appendChild(d);
   });
   const txt = [];
+  if (prueba) txt.push("⚠ 'Modo prueba' está marcado: limpiar y levantar el job están deshabilitados. Desmárquelo para operar sobre Azure.");
   if (msgAccion) txt.push(msgAccion);
   if (e?.fase === 'limpio') txt.push('Entorno limpio (el modelo de riesgo y el bandit inicial se conservaron; revise arriba que no haya aviso de archivos faltantes). Levante el job, espere a que los streams procesen y recién entonces inicie la corrida.');
   if (e?.fase === 'limpio_parcial') txt.push('⚠ Limpieza parcial: Redis se omitió (no configurado o inalcanzable). Si existe, límpielo a mano.');
@@ -212,6 +219,11 @@ async function refrescar() {
     $('est').textContent = s.estado + (s.modo ? ' · ' + s.modo : '');
     $('est').className = 'estado ' + s.estado;
     const drenando = ['verificando_drenado', 'pausando'].includes(s.drenado?.fase);
+    azureOk = s.azure_habilitado !== false;
+    if (!azureOk) {  // despliegue solo de pruebas (AZURE_HABILITADO=false): se fuerza el modo prueba
+      $('dry').checked = true; $('dry').disabled = true;
+      $('dry').parentElement.title = 'Azure deshabilitado en este despliegue (AZURE_HABILITADO=false)';
+    }
     advInicio = s.advertencia_inicio || null;
     $('ini').disabled = activa || drenando;
     $('ini').title = drenando ? 'Bloqueado: el pipeline aún se está drenando' : (advInicio || '');
@@ -234,6 +246,7 @@ async function refrescar() {
     }
   } catch (e) { aviso(e.message, true); }
 }
+$('dry').addEventListener('change', () => pintarLimpieza(ultLimp, ultBloq));
 refrescar(); setInterval(refrescar, 2000);
 </script>
 </body>
