@@ -4,3 +4,5 @@ azure-eventhub>=5.11
 azure-identity>=1.15
 fastapi>=0.110
 uvicorn>=0.29
+azure-storage-blob>=12.19
+redis>=5.0
