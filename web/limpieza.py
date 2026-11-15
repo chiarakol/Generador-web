@@ -26,7 +26,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from web.databricks import ClienteDatabricks, _bool_env, crear_cliente_desde_entorno, crear_clientes_pausa
+from web.databricks import (MENSAJE_SIN_AZURE, ClienteDatabricks, _bool_env, azure_habilitado,
+                            crear_cliente_desde_entorno, crear_clientes_pausa)
 from web.lectores import crear_cliente_redis, entorno_desde_env
 
 CONTENEDORES = ("delta", "snapshots")
@@ -112,6 +113,8 @@ class Limpieza:
     def iniciar(self, confirmar: str, bloqueo: Optional[str]) -> None:
         """Valida TODO antes de borrar nada. Lanza ErrorLimpieza con el motivo si no procede.
         `bloqueo`: motivo ya calculado por quien conoce la corrida (None si no hay)."""
+        if not azure_habilitado():
+            raise ErrorLimpieza(MENSAJE_SIN_AZURE)
         if not self.configurada:
             raise ErrorLimpieza("La limpieza no esta configurada (falta LIMPIEZA_STORAGE_CONN_STRING).")
         try:
@@ -247,6 +250,10 @@ class Limpieza:
 
     # -- levantar el job (accion separada, nunca automatica) --------------------------------------
     async def lanzar_job(self, confirmar: str, bloqueo: Optional[str]) -> Dict[str, Any]:
+        if not azure_habilitado():
+            raise ErrorLimpieza(MENSAJE_SIN_AZURE)
+        if not self.configurada:  # mismo requisito que la limpieza: sin esa configuracion la tarjeta ni aparece
+            raise ErrorLimpieza("El lanzamiento no esta configurado (falta LIMPIEZA_STORAGE_CONN_STRING).")
         entorno = entorno_desde_env()
         if confirmar != self.frase_confirmacion(entorno):
             raise ErrorLimpieza(f"Confirmacion incorrecta: escribir exactamente '{self.frase_confirmacion(entorno)}'.")

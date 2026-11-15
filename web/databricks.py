@@ -175,6 +175,15 @@ def _bool_env(nombre: str, defecto: bool) -> bool:
     raise ValueError(f"{nombre} debe ser true o false, recibido {crudo!r}")
 
 
+def azure_habilitado() -> bool:
+    """Interruptor global. AZURE_HABILITADO=false deja la web SOLO en modo prueba: no publica a Event
+    Hub, no limpia Azure ni lanza jobs. Sin definir = true (los despliegues con Azure siguen igual)."""
+    return _bool_env("AZURE_HABILITADO", True)
+
+
+MENSAJE_SIN_AZURE = "Azure esta deshabilitado en este despliegue (AZURE_HABILITADO=false): solo modo prueba."
+
+
 def pausa_activada() -> bool:
     return _bool_env("DRENADO_PAUSAR", False)
 

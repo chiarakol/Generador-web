@@ -20,7 +20,8 @@ from src.producer.eventhub_producer import EventHubPublisher, Publisher, Resulta
 from src.simulador.motor import Simulador
 from src.simulador.reloj import DIA
 from web.drenado import crear_lector, medir_baseline, modo_lector, parametros_desde_entorno, vigilar
-from web.databricks import crear_clientes_pausa, pausa_activada, pausar_todos_async
+from web.databricks import (MENSAJE_SIN_AZURE, azure_habilitado, crear_clientes_pausa, pausa_activada,
+                            pausar_todos_async)
 from web.lectores import entorno_desde_env
 from web.limpieza import Limpieza
 from web.persistencia import crear_almacen
@@ -79,7 +80,8 @@ class Corrida:
         parametros_desde_entorno()  # falla fuerte al arrancar si DRENADO_* es invalida
         # Pausa del job: apagada por defecto. Con DRENADO_PAUSAR=true exige las variables de Databricks.
         # Detiene los TRES jobs del entorno (streaming + DTRO + SHAP-lite), igual que la limpieza.
-        self._clientes_pausa = crear_clientes_pausa(entorno_desde_env()) if pausa_activada() else None
+        self._clientes_pausa = (crear_clientes_pausa(entorno_desde_env())
+                                if azure_habilitado() and pausa_activada() else None)
         self._reiniciar()
         self._tarea: Optional[asyncio.Task] = None
         self._fin_simulado: Optional[datetime] = _leer_fin_anterior()
@@ -111,6 +113,8 @@ class Corrida:
                 reloj_escala: Optional[float], sim_start: Optional[str] = None) -> None:
         if self.activa:
             raise RuntimeError("Ya hay una corrida en curso; detenerla antes de iniciar otra.")
+        if not dry_run and not azure_habilitado():
+            raise RuntimeError(MENSAJE_SIN_AZURE)
         if self.limpieza.activa:
             raise RuntimeError("Hay una limpieza del entorno en curso; esperar a que termine.")
         if self.drenado is not None and self.drenado.get("fase") in ("verificando_drenado", "pausando"):
@@ -365,6 +369,7 @@ class Corrida:
             "drenado": self.drenado,
             "limpieza": self.limpieza.resumen(),
             "advertencia_inicio": self.advertencia_inicio(),
+            "azure_habilitado": azure_habilitado(),
         }
 
     def recientes(self) -> Dict[str, list]:
