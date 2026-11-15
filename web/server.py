@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from web.limpieza import ErrorLimpieza
 from web.runner import Corrida
 
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
@@ -95,6 +96,39 @@ async def detener(authorization: Optional[str] = Header(default=None)):
         raise HTTPException(409, "No hay una corrida en curso.")
     corrida.detener()
     return corrida.resumen()
+
+
+class Confirmacion(BaseModel):
+    confirmar: str = ""
+
+
+def _exigir_token_estricto(authorization: Optional[str]) -> None:
+    """Acciones destructivas o que gastan credito: el token es obligatorio SIEMPRE (tambien en local)."""
+    if not ADMIN_TOKEN:
+        raise HTTPException(403, "Esta accion exige configurar ADMIN_TOKEN.")
+    if not _autenticado(authorization):
+        raise HTTPException(401, "Token invalido o ausente.")
+
+
+@app.post("/api/limpiar")
+async def limpiar(c: Confirmacion, authorization: Optional[str] = Header(default=None)):
+    _exigir_token_estricto(authorization)
+    try:
+        corrida.limpieza.iniciar(c.confirmar, corrida.bloqueo_limpieza())
+    except ErrorLimpieza as err:
+        raise HTTPException(409, str(err))
+    return corrida.limpieza.resumen()
+
+
+@app.post("/api/job/lanzar")
+async def lanzar_job(c: Confirmacion, authorization: Optional[str] = Header(default=None)):
+    _exigir_token_estricto(authorization)
+    try:
+        return await corrida.limpieza.lanzar_job(c.confirmar, corrida.bloqueo_limpieza())
+    except ErrorLimpieza as err:
+        raise HTTPException(409, str(err))
+    except ValueError as err:  # configuracion de entorno invalida o ausente
+        raise HTTPException(500, str(err))
 
 
 @app.get("/")

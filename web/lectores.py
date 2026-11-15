@@ -125,6 +125,18 @@ def entorno_desde_env() -> str:
     return entorno
 
 
+def crear_cliente_redis():
+    """Cliente Redis (TLS, 6380) o None si REDIS_HOST/REDIS_KEY no estan definidas. Ambas o ninguna."""
+    host, clave = os.getenv("REDIS_HOST", "").strip(), os.getenv("REDIS_KEY", "").strip()
+    if bool(host) != bool(clave):
+        raise ValueError("REDIS_HOST y REDIS_KEY deben definirse juntas (o ninguna).")
+    if not host:
+        return None
+    import redis
+    return redis.Redis(host=host, port=PUERTO_REDIS, password=clave, ssl=True,
+                       socket_timeout=10, socket_connect_timeout=10)
+
+
 def crear_lector_real() -> LectorReal:
     """Construye el lector con las variables de entorno; falla fuerte si faltan o son invalidas."""
     entorno = entorno_desde_env()
@@ -137,15 +149,8 @@ def crear_lector_real() -> LectorReal:
     except Exception:  # noqa: BLE001 -- no repetir el valor del secreto en el mensaje
         raise ValueError("STORAGE_CONN_STRING no es un connection string valido de Azure Storage.")
 
-    redis_lector: Optional[LectorRedis] = None
-    host, clave = os.getenv("REDIS_HOST", "").strip(), os.getenv("REDIS_KEY", "").strip()
-    if bool(host) != bool(clave):
-        raise ValueError("REDIS_HOST y REDIS_KEY deben definirse juntas (o ninguna).")
-    if host:
-        import redis
-        cliente = redis.Redis(host=host, port=PUERTO_REDIS, password=clave, ssl=True,
-                              socket_timeout=10, socket_connect_timeout=10)
-        redis_lector = LectorRedis(cliente, entorno)
+    cliente = crear_cliente_redis()
+    redis_lector = LectorRedis(cliente, entorno) if cliente is not None else None
 
     return LectorReal(entorno,
                       LectorDelta(contenedor, f"{entorno}/decisiones_cads"),

@@ -72,11 +72,14 @@ class ClienteDatabricks:
                 return runs
 
     # -- Pausa ------------------------------------------------------------------------------------
-    def pausar(self) -> Dict[str, Any]:
+    def pausar(self, omitir_inexistente: bool = False) -> Dict[str, Any]:
         """Pausa y cancela. Devuelve {"jobs": [{job_id, acciones}], "completa": bool}.
-        Lanza RuntimeError si el job no existe o la API falla (no se oculta)."""
+        Lanza RuntimeError si el job no existe (salvo `omitir_inexistente`, que devuelve
+        "inexistente": True, como el script original) o si la API falla (no se oculta)."""
         jobs = self.buscar_jobs()
         if not jobs:
+            if omitir_inexistente:
+                return {"jobs": [], "completa": True, "inexistente": True}
             raise RuntimeError(f"No existe ningun job llamado '{self.nombre_job}'.")
         resultado: List[dict] = []
         completa = True
@@ -106,6 +109,23 @@ class ClienteDatabricks:
             resultado.append({"job_id": jid, "acciones": acciones or ["sin disparadores ni runs activos"]})
         return {"jobs": resultado, "completa": completa}
 
+    def lanzar(self) -> Dict[str, Any]:
+        """run-now del job. Solo si existe UNO con ese nombre y no tiene ya un run activo
+        (evita duplicar runs que gastan credito). Lanza RuntimeError si no se cumple."""
+        jobs = self.buscar_jobs()
+        if not jobs:
+            raise RuntimeError(f"No existe ningun job llamado '{self.nombre_job}'.")
+        if len(jobs) > 1:
+            raise RuntimeError(f"Hay {len(jobs)} jobs llamados '{self.nombre_job}': no se sabe cual lanzar.")
+        jid = jobs[0]["job_id"]
+        if self.runs_activos(jid):
+            raise RuntimeError(f"El job '{self.nombre_job}' ya tiene un run activo.")
+        r = self._api("POST", "/jobs/run-now", {"job_id": jid})
+        return {"job_id": jid, "run_id": r.get("run_id")}
+
+    async def lanzar_async(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(self.lanzar)
+
     async def pausar_async(self) -> Dict[str, Any]:
         return await asyncio.to_thread(self.pausar)  # urllib es sincrono: fuera del event loop
 
@@ -125,8 +145,9 @@ def pausa_activada() -> bool:
     return _bool_env("DRENADO_PAUSAR", False)
 
 
-def crear_cliente_desde_entorno() -> ClienteDatabricks:
-    """Falla fuerte si falta algo o es invalido (convencion del proyecto)."""
+def crear_cliente_desde_entorno(nombre_job: Optional[str] = None) -> ClienteDatabricks:
+    """Falla fuerte si falta algo o es invalido (convencion del proyecto).
+    Sin `nombre_job` usa NOMBRE_JOB_STREAMING."""
     def req(n: str) -> str:
         v = os.getenv(n, "").strip()
         if not v:
@@ -135,4 +156,4 @@ def crear_cliente_desde_entorno() -> ClienteDatabricks:
     host = req("DATABRICKS_HOST").rstrip("/")
     if not host.startswith("https://"):
         raise ValueError("DATABRICKS_HOST debe empezar con https:// (el token no viaja por http).")
-    return ClienteDatabricks(host, req("DATABRICKS_TOKEN"), req("NOMBRE_JOB_STREAMING"))
+    return ClienteDatabricks(host, req("DATABRICKS_TOKEN"), nombre_job or req("NOMBRE_JOB_STREAMING"))

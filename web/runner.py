@@ -19,8 +19,9 @@ from src.main import _publicar, _validar_lote
 from src.producer.eventhub_producer import EventHubPublisher, Publisher, ResultadoPublicacion
 from src.simulador.motor import Simulador
 from src.simulador.reloj import DIA
-from web.drenado import crear_lector, parametros_desde_entorno, vigilar
+from web.drenado import crear_lector, medir_baseline, modo_lector, parametros_desde_entorno, vigilar
 from web.databricks import crear_cliente_desde_entorno, pausa_activada
+from web.limpieza import Limpieza
 from web.persistencia import crear_almacen
 
 # Holgura entre el fin de una corrida y el inicio simulado de la siguiente.
@@ -72,6 +73,8 @@ class Corrida:
     def __init__(self):
         self._tarea_drenado: Optional[asyncio.Task] = None
         self._almacen = crear_almacen()
+        self.limpieza = Limpieza()
+        self.limpieza.validar_arranque()  # falla fuerte al arrancar si LIMPIEZA_* es invalida
         parametros_desde_entorno()  # falla fuerte al arrancar si DRENADO_* es invalida
         # Pausa del job: apagada por defecto. Con DRENADO_PAUSAR=true exige las variables de Databricks.
         self._cliente_db = crear_cliente_desde_entorno() if pausa_activada() else None
@@ -93,6 +96,9 @@ class Corrida:
         self.archivo_no_enviados: Optional[str] = None
         self.publisher: Optional[Publisher] = None
         self.drenado: Optional[Dict[str, Any]] = None  # fase "verificando_drenado" (None si no aplica)
+        self._baseline: Optional[Dict[str, Any]] = None  # foto del consumidor antes de publicar
+        self._baseline_error: Optional[str] = None
+        self._lector_base = None  # lector real usado para el baseline; se reutiliza en la vigilancia
         self._stop = asyncio.Event()
 
     @property
@@ -103,6 +109,8 @@ class Corrida:
                 reloj_escala: Optional[float], sim_start: Optional[str] = None) -> None:
         if self.activa:
             raise RuntimeError("Ya hay una corrida en curso; detenerla antes de iniciar otra.")
+        if self.limpieza.activa:
+            raise RuntimeError("Hay una limpieza del entorno en curso; esperar a que termine.")
         if self.drenado is not None and self.drenado.get("fase") in ("verificando_drenado", "pausando"):
             raise RuntimeError(f"El pipeline aun esta en fase {self.drenado['fase']}; "
                                "esperar a que termine antes de iniciar otra corrida.")
@@ -160,6 +168,8 @@ class Corrida:
             self.estadisticas = sim.estadisticas()
             if not self._stop.is_set():
                 self.estado = "corriendo"
+            if not dry_run:
+                await self._medir_baseline()
             paso_sim = cfg.reloj.intervalo_seg * cfg.reloj.escala
             horizonte = cfg.reloj.horizonte_dias * DIA if cfg.reloj.horizonte_dias > 0 else None
             t = 0.0
@@ -213,6 +223,19 @@ class Corrida:
                 if not dry_run and publisher_cerrado:
                     self._abrir_drenado()
 
+    async def _medir_baseline(self) -> None:
+        """Lee el consumidor ANTES de publicar el primer evento. Un fallo NO aborta la corrida
+        (publicar es lo principal): se registra y la vigilancia cae a conteos absolutos, avisandolo."""
+        try:
+            if modo_lector() != "real":
+                return  # sin pipeline real (ninguno/simulado) no hay nada que medir
+            from web.lectores import crear_lector_real
+            self._lector_base = crear_lector_real()
+            self._baseline = await medir_baseline(self._lector_base)
+        except Exception as err:  # noqa: BLE001
+            self._lector_base = None
+            self._baseline_error = f"{type(err).__name__}: {err}"
+
     def _abrir_drenado(self) -> None:
         """Congela F y G definitivos y abre la fase 'verificando_drenado'.
 
@@ -226,15 +249,19 @@ class Corrida:
             "abierto_en": _iso(datetime.now(timezone.utc)),
             "persistencia": self._almacen.descripcion,
             "aviso_persistencia": self._almacen.aviso,
+            "pausa_automatica": self._cliente_db is not None,
+            "baseline": self._baseline,  # None = sin baseline: conteos absolutos (ver baseline_error)
             "lecturas": [],  # una entrada por lectura (cads, evaluadas, pendientes, huerfanos)
         }
+        if self._baseline_error:
+            self.drenado["baseline_error"] = self._baseline_error
         self._guardar_drenado()
         self._lanzar_vigilancia(0.0)
 
     def _lanzar_vigilancia(self, transcurrido_s: float) -> None:
         """Etapa 1: la vigilancia solo mide y muestra; no pausa nada."""
         try:
-            lector = crear_lector(self.drenado["F"], self.drenado["G"])
+            lector = self._lector_base or crear_lector(self.drenado["F"], self.drenado["G"])
             if lector is None:
                 self.drenado["fase"] = "sin_lector"
             else:
@@ -300,6 +327,14 @@ class Corrida:
             return  # sin event loop (pruebas): se deja cargado, sin reanudar
         self._lanzar_vigilancia(max(transcurrido, 0.0))
 
+    def bloqueo_limpieza(self) -> Optional[str]:
+        """Motivo por el que NO se puede limpiar el entorno / levantar el job ahora (None = se puede)."""
+        if self.activa:
+            return "Hay una corrida en curso; esperar a que finalice."
+        if self.drenado is not None and self.drenado.get("fase") in ("verificando_drenado", "pausando"):
+            return f"El pipeline aun esta en fase {self.drenado['fase']}; esperar a que termine."
+        return None
+
     def cancelar_drenado(self) -> None:
         if self._tarea_drenado is not None and not self._tarea_drenado.done():
             self._tarea_drenado.cancel()
@@ -313,6 +348,7 @@ class Corrida:
             "estadisticas": self.estadisticas, "publicacion": self.conteo,
             "archivo_no_enviados": self.archivo_no_enviados,
             "drenado": self.drenado,
+            "limpieza": self.limpieza.resumen(),
         }
 
     def recientes(self) -> Dict[str, list]:

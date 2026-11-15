@@ -61,8 +61,8 @@ class LectorSimulado(LectorPipeline):
         ])
 
 
-def crear_lector(F: int, G: int) -> Optional[LectorPipeline]:
-    """Elige el lector segun DRENADO_LECTOR: 'auto' (defecto), 'real', 'simulado' o 'ninguno'.
+def modo_lector() -> str:
+    """Resuelve DRENADO_LECTOR: 'auto' (defecto), 'real', 'simulado' o 'ninguno'.
 
     'auto' usa el real si hay PIPELINE_ENTORNO o STORAGE_CONN_STRING (y entonces exige ambas);
     si no hay ninguna, no vigila."""
@@ -70,6 +70,13 @@ def crear_lector(F: int, G: int) -> Optional[LectorPipeline]:
     if modo == "auto":
         hay = bool(os.getenv("PIPELINE_ENTORNO", "").strip() or os.getenv("STORAGE_CONN_STRING", "").strip())
         modo = "real" if hay else "ninguno"
+    if modo not in ("ninguno", "simulado", "real"):
+        raise ValueError(f"DRENADO_LECTOR invalido: {modo!r} (use 'auto', 'real', 'simulado' o 'ninguno')")
+    return modo
+
+
+def crear_lector(F: int, G: int) -> Optional[LectorPipeline]:
+    modo = modo_lector()
     if modo == "ninguno":
         return None
     if modo == "simulado":
@@ -77,14 +84,28 @@ def crear_lector(F: int, G: int) -> Optional[LectorPipeline]:
     if modo == "real":
         from web.lectores import crear_lector_real  # import tardio: evita ciclo y dependencias opcionales
         return crear_lector_real()
-    raise ValueError(f"DRENADO_LECTOR invalido: {modo!r} (use 'auto', 'real', 'simulado' o 'ninguno')")
+    raise AssertionError(modo)  # modo_lector() ya valido
+
+
+async def medir_baseline(lector: LectorPipeline) -> Dict[str, Any]:
+    """Foto del consumidor ANTES de publicar: filas que ya habia (restos de pruebas anteriores)
+    y pendientes de Redis. Despues solo se cuenta lo que crece por encima de esta foto."""
+    crudo = await lector.leer()
+    base = {"cads": crudo["cads"], "evaluadas": crudo["evaluadas"], "pendientes": crudo.get("pendientes"),
+            "en": _ahora()}
+    if crudo.get("avisos"):
+        base["avisos"] = crudo["avisos"]
+    return base
 
 
 def evaluar(F: int, G: int, previa: Dict[str, Any], actual: Dict[str, Any],
             tolerancia_pendientes: int = 0) -> Dict[str, Any]:
     """Condiciones sobre el par (lectura previa, lectura actual). Cada una: True/False/None(n/d)."""
-    a = previa["cads"] == F and actual["cads"] == F
-    b = previa["evaluadas"] == actual["evaluadas"]
+    # `*_nuevas` = lectura menos baseline (lo que esta corrida hizo crecer); sin baseline = absoluto.
+    cads = lambda l: l.get("cads_nuevas", l["cads"])
+    evaluadas = lambda l: l.get("evaluadas_nuevas", l["evaluadas"])
+    a = cads(previa) == F and cads(actual) == F
+    b = evaluadas(previa) == evaluadas(actual)
     pend = [previa.get("pendientes"), actual.get("pendientes")]
     c = None if any(p is None for p in pend) else all(p <= tolerancia_pendientes for p in pend)
     medibles = [x for x in (a, b, c) if x is not None]
@@ -92,7 +113,7 @@ def evaluar(F: int, G: int, previa: Dict[str, Any], actual: Dict[str, Any],
         "a_cads_igual_F": a,
         "b_evaluadas_estable": b,
         "c_pendientes_cero": c,
-        "huerfanos": G - actual["evaluadas"],  # d: solo se registra
+        "huerfanos": G - evaluadas(actual),  # d: solo se registra
         "cumplidas": all(medibles),
         "parcial": c is None,  # sin Redis: el resultado no cubre la condicion c
     }
@@ -142,6 +163,7 @@ async def vigilar(drenado: Dict[str, Any], lector: LectorPipeline, *, intervalo_
     `transcurrido_s`: tiempo ya vigilado antes de un reinicio (el tope no se reinicia).
     `guardar`: se invoca tras cada cambio para persistir el registro."""
     F, G = drenado["F"], drenado["G"]
+    base = drenado.get("baseline") or {"cads": 0, "evaluadas": 0}  # sin baseline: conteos absolutos
     inicio = time.monotonic() - transcurrido_s
     lecturas: List[Dict[str, Any]] = drenado["lecturas"]
     while True:
@@ -151,7 +173,9 @@ async def vigilar(drenado: Dict[str, Any], lector: LectorPipeline, *, intervalo_
             drenado["ultimo_error"] = f"{type(err).__name__}: {err}"
         else:
             drenado.pop("ultimo_error", None)
-            lectura = {**crudo, "huerfanos": G - crudo["evaluadas"], "en": _ahora()}
+            lectura = {**crudo, "cads_nuevas": crudo["cads"] - base["cads"],
+                       "evaluadas_nuevas": crudo["evaluadas"] - base["evaluadas"], "en": _ahora()}
+            lectura["huerfanos"] = G - lectura["evaluadas_nuevas"]
             if lecturas:
                 lectura["condiciones"] = evaluar(F, G, lecturas[-1], lectura, tolerancia_pendientes)
             lecturas.append(lectura)
