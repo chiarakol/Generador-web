@@ -80,11 +80,11 @@
   <div class="card" id="limp" hidden>
     <h2>Limpieza del entorno <small id="l-ent"></small></h2>
     <p style="margin:0 0 10px">Borra <b>de forma irreversible</b> las tablas Delta, checkpoints y snapshots del entorno, y sus claves de Redis.
-      Antes pausa los jobs del entorno y cancela sus runs. No vacía los Event Hubs (retención de 1 día).</p>
+      Antes pausa los jobs del entorno y cancela sus runs. No vacía los Event Hubs (retención de 1 día). <b>Después hay que ejecutar <code>setup_databricks_job.sh</code></b> para restaurar el modelo de riesgo y el bandit previo.</p>
     <div class="row">
-      <label>Confirmar: escriba <b id="l-frase"></b> <input id="l-conf" autocomplete="off"></label>
+      <label>Confirmar: escriba <b id="l-frase"></b> <input type="text" id="l-conf" autocomplete="off"></label>
       <button id="l-btn" style="background:var(--bad)">🗑 Limpiar entorno</button>
-      <button id="l-job">▶ Levantar job streaming</button>
+      <button id="l-job" style="background:var(--acc)">▶ Levantar job streaming</button>
     </div>
     <div id="l-pasos" style="margin-top:10px"></div>
     <div id="l-msg" style="margin-top:6px"></div>
@@ -184,7 +184,7 @@ function pintarLimpieza(l, bloqueado) {
   });
   const txt = [];
   if (msgAccion) txt.push(msgAccion);
-  if (e?.fase === 'limpio') txt.push('Entorno limpio. Ya puede levantar el job streaming y luego iniciar la corrida.');
+  if (e?.fase === 'limpio') txt.push('Entorno limpio. ⚠ La limpieza también borró el modelo de riesgo y el bandit previo de snapshots: ANTES de levantar el job ejecute setup_databricks_job.sh <entorno> (los vuelve a subir). Luego levante el job, espere a que los streams procesen y recién entonces inicie la corrida.');
   if (e?.fase === 'limpio_parcial') txt.push('⚠ Limpieza parcial: Redis se omitió (no configurado o inalcanzable). Si existe, límpielo a mano.');
   if (e?.fase === 'error') txt.push('✘ La limpieza se detuvo por un error (arriba). Es repetible; no dé el entorno por limpio.');
   if (l.ultimo_lanzamiento) txt.push(`Job ${l.ultimo_lanzamiento.job} lanzado (run ${l.ultimo_lanzamiento.run_id}, ${l.ultimo_lanzamiento.en}). Espere a que esté en RUNNING antes de iniciar.`);
