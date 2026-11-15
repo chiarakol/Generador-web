@@ -66,7 +66,7 @@
   </div>
 
   <div class="card" id="dren" hidden>
-    <h2>Drenado del pipeline <small>(solo informativo, no pausa el job)</small></h2>
+    <h2>Drenado del pipeline <small id="d-sub"></small></h2>
     <div class="grid">
       <div class="m"><b id="d-fase" style="font-size:1rem">-</b><span>fase</span></div>
       <div class="m"><b id="d-cads">-</b><span id="d-cads-l">CADS (de F)</span></div>
@@ -75,6 +75,19 @@
       <div class="m"><b id="d-pe">-</b><span>pendientes Redis</span></div>
     </div>
     <div id="d-cond" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="limp" hidden>
+    <h2>Limpieza del entorno <small id="l-ent"></small></h2>
+    <p style="margin:0 0 10px">Borra <b>de forma irreversible</b> las tablas Delta, checkpoints y snapshots del entorno, y sus claves de Redis.
+      Antes pausa los jobs del entorno y cancela sus runs. No vacía los Event Hubs (retención de 1 día).</p>
+    <div class="row">
+      <label>Confirmar: escriba <b id="l-frase"></b> <input id="l-conf" autocomplete="off"></label>
+      <button id="l-btn" style="background:var(--bad)">🗑 Limpiar entorno</button>
+      <button id="l-job">▶ Levantar job streaming</button>
+    </div>
+    <div id="l-pasos" style="margin-top:10px"></div>
+    <div id="l-msg" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -121,14 +134,21 @@ function pintarDrenado(d) {
   const l = (d.lecturas || []).slice(-1)[0] || {};
   const v = x => (x === null || x === undefined) ? 'n/d' : fmt(x);
   $('d-fase').textContent = (FASES[d.fase] || d.fase) + (d.parcial ? ' (parcial: sin Redis)' : '');
-  $('d-cads').textContent = v(l.cads); $('d-cads-l').textContent = 'CADS (de F = ' + fmt(d.F) + ')';
-  $('d-ev').textContent = v(l.evaluadas); $('d-ev-l').textContent = 'evaluadas (de G = ' + fmt(d.G) + ')';
+  $('d-sub').textContent = d.pausa_automatica ? '(al cumplirse las condiciones, pausa el job streaming)' : '(solo informativo, no pausa el job)';
+  const nuevas = d.baseline ? 'nuevas ' : '';
+  $('d-cads').textContent = v(l.cads_nuevas ?? l.cads); $('d-cads-l').textContent = 'CADS ' + nuevas + '(de F = ' + fmt(d.F) + ')';
+  $('d-ev').textContent = v(l.evaluadas_nuevas ?? l.evaluadas); $('d-ev-l').textContent = 'evaluadas ' + nuevas + '(de G = ' + fmt(d.G) + ')';
   $('d-hu').textContent = v(l.huerfanos); $('d-pe').textContent = v(l.pendientes);
   const c = l.condiciones, ok = x => x === null ? 'n/d' : (x ? '✔' : '✘');
   const txt = [];
   if (c) txt.push(`a) CADS = F ${ok(c.a_cads_igual_F)} · b) evaluadas estable ${ok(c.b_evaluadas_estable)} · c) pendientes ≈ 0 ${ok(c.c_pendientes_cero)}`);
   else if (d.fase === 'verificando_drenado') txt.push('Esperando una segunda lectura para evaluar condiciones…');
   txt.push('Lecturas: ' + (d.lecturas || []).length);
+  const b = d.baseline;
+  if (b) {
+    txt.push(`Baseline previo: CADS ${fmt(b.cads)}, evaluadas ${fmt(b.evaluadas)}, pendientes ${b.pendientes === null ? 'n/d' : fmt(b.pendientes)} (se descuentan de CADS y evaluadas)`);
+    if (b.pendientes > 0) txt.push('⚠ Había pendientes en Redis antes de empezar: la condición c puede no cumplirse hasta limpiar Redis');
+  } else txt.push('⚠ Sin baseline' + (d.baseline_error ? ' (' + d.baseline_error + ')' : '') + ': conteos ABSOLUTOS; restos de pruebas anteriores rompen la condición a');
   (l.avisos || []).forEach(a => txt.push('Aviso: ' + a));
   if (d.fase === 'verificando_drenado' && d.aviso_persistencia) txt.push('⚠ ' + d.aviso_persistencia);
   const p = d.pausa;
@@ -143,6 +163,41 @@ function pintarDrenado(d) {
   if (d.ultimo_error) txt.push('Error: ' + d.ultimo_error);
   $('d-cond').textContent = txt.join(' — ');
 }
+
+const PASOS_TXT = { pausar_jobs: 'Pausar jobs y cancelar runs', borrar_delta: 'Borrar contenedor delta', borrar_snapshots: 'Borrar contenedor snapshots',
+  borrar_redis: 'Borrar claves de Redis', verificar: 'Verificar que no quede nada' };
+const ICONO = { pendiente: '·', en_curso: '⏳', ok: '✔', omitido: '⚠', error: '✘' };
+function pintarLimpieza(l, bloqueado) {
+  $('limp').hidden = !l || !l.configurada;
+  if (!l || !l.configurada) return;
+  const e = l.estado, limpiando = e?.fase === 'limpiando';
+  const frase = l.entorno === 'tesis' ? 'BORRAR TESIS' : (l.entorno || '?');
+  $('l-ent').textContent = '(entorno: ' + (l.entorno || 'no definido') + ')';
+  $('l-frase').textContent = frase;
+  $('l-btn').disabled = limpiando || bloqueado; $('l-job').disabled = limpiando || bloqueado;
+  $('l-pasos').textContent = '';
+  (e?.pasos || []).forEach(p => {
+    const d = document.createElement('div');
+    d.textContent = `${ICONO[p.estado] || '·'} ${PASOS_TXT[p.nombre] || p.nombre}${p.detalle ? ' — ' + p.detalle : ''}`;
+    $('l-pasos').appendChild(d);
+  });
+  const txt = [];
+  if (e?.fase === 'limpio') txt.push('Entorno limpio. Ya puede levantar el job streaming y luego iniciar la corrida.');
+  if (e?.fase === 'limpio_parcial') txt.push('⚠ Limpieza parcial: Redis se omitió (no configurado o inalcanzable). Si existe, límpielo a mano.');
+  if (e?.fase === 'error') txt.push('✘ La limpieza se detuvo por un error (arriba). Es repetible; no dé el entorno por limpio.');
+  if (l.ultimo_lanzamiento) txt.push(`Job ${l.ultimo_lanzamiento.job} lanzado (run ${l.ultimo_lanzamiento.run_id}, ${l.ultimo_lanzamiento.en}). Espere a que esté en RUNNING antes de iniciar.`);
+  $('l-msg').textContent = txt.join(' ');
+}
+$('l-btn').onclick = async () => {
+  if (!confirm('Esto BORRA el entorno de forma irreversible. ¿Continuar?')) return;
+  try { $('l-msg').textContent = ''; await api('/api/limpiar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
+  catch (e) { $('l-msg').textContent = '✘ ' + e.message; }
+};
+$('l-job').onclick = async () => {
+  if (!confirm('Esto lanza el job streaming (gasta crédito de Databricks). ¿Continuar?')) return;
+  try { $('l-msg').textContent = ''; await api('/api/job/lanzar', 'POST', { confirmar: $('l-conf').value }); refrescar(); }
+  catch (e) { $('l-msg').textContent = '✘ ' + e.message; }
+};
 
 async function refrescar() {
   try {
@@ -162,6 +217,7 @@ async function refrescar() {
     $('m-pub').textContent = fmt(p.features?.publicados);
     $('m-no').textContent = fmt((p.features?.no_enviados || 0) + (p.ground_truth?.no_enviados || 0));
     pintarDrenado(s.drenado);
+    pintarLimpieza(s.limpieza, activa || drenando);
     const f = e.fraude_real_por_tipologia || {}, c = e.campanas_lanzadas || {};
     $('tipos').innerHTML = Object.keys({ ...f, ...c }).map(k => `<tr><td>${k}</td><td class="n">${fmt(f[k])}</td><td class="n">${fmt(c[k])}</td></tr>`).join('');
     if (s.modo && s.modo.startsWith('prueba')) {
