@@ -14,11 +14,14 @@ from datetime import datetime, timedelta, timezone
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
-from src.config import ESCALA_RELOJ, config
+from src.config import config
 from src.main import _publicar, _validar_lote
 from src.producer.eventhub_producer import EventHubPublisher, Publisher, ResultadoPublicacion
 from src.simulador.motor import Simulador
 from src.simulador.reloj import DIA
+from web.drenado import crear_lector, parametros_desde_entorno, vigilar
+from web.databricks import crear_cliente_desde_entorno, pausa_activada
+from web.persistencia import crear_almacen
 
 # Holgura entre el fin de una corrida y el inicio simulado de la siguiente.
 MARGEN_ENTRE_CORRIDAS = timedelta(days=1)
@@ -67,9 +70,15 @@ class PublisherMemoria(Publisher):
 
 class Corrida:
     def __init__(self):
+        self._tarea_drenado: Optional[asyncio.Task] = None
+        self._almacen = crear_almacen()
+        parametros_desde_entorno()  # falla fuerte al arrancar si DRENADO_* es invalida
+        # Pausa del job: apagada por defecto. Con DRENADO_PAUSAR=true exige las variables de Databricks.
+        self._cliente_db = crear_cliente_desde_entorno() if pausa_activada() else None
         self._reiniciar()
         self._tarea: Optional[asyncio.Task] = None
         self._fin_simulado: Optional[datetime] = _leer_fin_anterior()
+        self._recuperar_drenado()
 
     def _reiniciar(self) -> None:
         self.estado = "inactivo"  # inactivo|calentando|corriendo|deteniendo|finalizado|error
@@ -83,6 +92,7 @@ class Corrida:
         self.conteo = {d: {"publicados": 0, "no_enviados": 0} for d in ("features", "ground_truth")}
         self.archivo_no_enviados: Optional[str] = None
         self.publisher: Optional[Publisher] = None
+        self.drenado: Optional[Dict[str, Any]] = None  # fase "verificando_drenado" (None si no aplica)
         self._stop = asyncio.Event()
 
     @property
@@ -90,9 +100,12 @@ class Corrida:
         return self._tarea is not None and not self._tarea.done()
 
     def iniciar(self, *, dry_run: bool, seed: Optional[int], horizonte_dias: Optional[float],
-                sim_start: Optional[str] = None) -> None:
+                reloj_escala: Optional[float], sim_start: Optional[str] = None) -> None:
         if self.activa:
             raise RuntimeError("Ya hay una corrida en curso; detenerla antes de iniciar otra.")
+        if self.drenado is not None and self.drenado.get("fase") in ("verificando_drenado", "pausando"):
+            raise RuntimeError(f"El pipeline aun esta en fase {self.drenado['fase']}; "
+                               "esperar a que termine antes de iniciar otra corrida.")
         cfg = copy.deepcopy(config)
         cfg.dry_run = dry_run
         # Sin semilla explicita cada inicio es un mundo nuevo (event_id distintos); con semilla
@@ -100,7 +113,8 @@ class Corrida:
         cfg.generador.seed = seed if seed is not None else secrets.randbelow(2**31)
         if horizonte_dias is not None:
             cfg.reloj.horizonte_dias = horizonte_dias
-        cfg.reloj.escala = ESCALA_RELOJ  # fija en todas las corridas
+        if reloj_escala is not None:
+            cfg.reloj.escala = reloj_escala
         # Cada inicio arranca el tiempo simulado DESPUES del fin de la corrida anterior: el reloj
         # nunca retrocede (la ventana/watermark de CAL y la guardia as-of de CADS trabajan sobre
         # el timestamp simulado). Primera corrida: SIM_START del entorno, o `sim_start` explicito.
@@ -112,6 +126,8 @@ class Corrida:
             inicio = _parse(cfg.reloj.inicio_iso)
         cfg.reloj.inicio_iso = _iso(inicio)
         self._inicio_sim = inicio
+        self.cancelar_drenado()  # una vigilancia vieja no debe mezclarse con la corrida nueva
+        self._almacen.borrar()   # el registro de la corrida anterior termina aqui
         self._reiniciar()
         self.modo = "prueba (sin Azure)" if dry_run else "Event Hub"
         self.params = {"seed": cfg.generador.seed, "horizonte_dias": cfg.reloj.horizonte_dias,
@@ -133,6 +149,7 @@ class Corrida:
     async def _correr(self, cfg, dry_run: bool) -> None:
         publisher: Optional[Publisher] = None
         sim: Optional[Simulador] = None
+        publisher_cerrado = False
         try:
             publisher = PublisherMemoria() if dry_run else EventHubPublisher()
             self.publisher = publisher
@@ -182,6 +199,7 @@ class Corrida:
                 if publisher is not None:
                     self.archivo_no_enviados = publisher.ruta_no_enviados
                     await publisher.close()
+                    publisher_cerrado = True
             except Exception as err:  # noqa: BLE001
                 self.mensaje = (self.mensaje + " | " if self.mensaje else "") + f"Error al cerrar: {err}"
             if sim is not None:
@@ -190,6 +208,101 @@ class Corrida:
             self.fin_real = time.time()
             if self.estado != "error":
                 self.estado = "finalizado"
+                # Solo con Event Hub (el modo prueba no tiene pipeline que drenar) y solo si las
+                # etiquetas pendientes ya se publicaron y el publisher cerro bien.
+                if not dry_run and publisher_cerrado:
+                    self._abrir_drenado()
+
+    def _abrir_drenado(self) -> None:
+        """Congela F y G definitivos y abre la fase 'verificando_drenado'.
+
+        Se llama una sola vez por corrida, ya con las etiquetas pendientes publicadas y el
+        publisher cerrado: desde aqui ningun evento mas sale hacia los hubs."""
+        self.drenado = {
+            "fase": "verificando_drenado",
+            "F": self.conteo["features"]["publicados"],       # features publicados (definitivo)
+            "G": self.conteo["ground_truth"]["publicados"],   # ground truth publicado (definitivo)
+            "no_enviados": {d: self.conteo[d]["no_enviados"] for d in self.conteo},
+            "abierto_en": _iso(datetime.now(timezone.utc)),
+            "persistencia": self._almacen.descripcion,
+            "aviso_persistencia": self._almacen.aviso,
+            "lecturas": [],  # una entrada por lectura (cads, evaluadas, pendientes, huerfanos)
+        }
+        self._guardar_drenado()
+        self._lanzar_vigilancia(0.0)
+
+    def _lanzar_vigilancia(self, transcurrido_s: float) -> None:
+        """Etapa 1: la vigilancia solo mide y muestra; no pausa nada."""
+        try:
+            lector = crear_lector(self.drenado["F"], self.drenado["G"])
+            if lector is None:
+                self.drenado["fase"] = "sin_lector"
+            else:
+                registro = self.drenado
+                self._tarea_drenado = asyncio.create_task(
+                    vigilar(registro, lector, transcurrido_s=transcurrido_s,
+                            guardar=self._guardar_drenado_async,
+                            pausar=self._cliente_db.pausar_async if self._cliente_db else None,
+                            **parametros_desde_entorno()))
+                self._tarea_drenado.add_done_callback(lambda t: self._vigilancia_terminada(registro, t))
+        except Exception as err:  # noqa: BLE001 -- configuracion invalida: se informa en la API
+            self.drenado["fase"] = "error"
+            self.drenado["ultimo_error"] = f"{type(err).__name__}: {err}"
+        if self._tarea_drenado is None or self._tarea_drenado.done():
+            self._guardar_drenado()
+
+    def _vigilancia_terminada(self, registro: Dict[str, Any], tarea: asyncio.Task) -> None:
+        """Si la vigilancia muere por una excepcion inesperada, la fase no puede quedar en
+        'verificando_drenado' (bloquearia iniciar para siempre): se marca error y se informa."""
+        if tarea.cancelled() or tarea.exception() is None:
+            return
+        err = tarea.exception()
+        registro["fase"] = "error"
+        registro["ultimo_error"] = f"{type(err).__name__}: {err}"
+        if registro is self.drenado:
+            self._guardar_drenado()
+
+    def _guardar_drenado(self) -> None:
+        if self.drenado is None:
+            return
+        try:
+            self._almacen.guardar(self.drenado)
+            self.drenado.pop("error_persistencia", None)
+        except Exception as err:  # noqa: BLE001 -- no tumba la vigilancia; se informa en la API
+            self.drenado["error_persistencia"] = f"{type(err).__name__}: {err}"
+
+    async def _guardar_drenado_async(self) -> None:
+        await asyncio.to_thread(self._guardar_drenado)
+
+    def _recuperar_drenado(self) -> None:
+        """Al arrancar: recarga el registro; si la vigilancia quedo a medias (reinicio), la reanuda.
+        Un registro ya terminado solo se muestra, como resultado de la ultima corrida."""
+        try:
+            registro = self._almacen.cargar()
+        except Exception as err:  # noqa: BLE001
+            print(f"No se pudo leer el registro de drenado: {err}")
+            return
+        if not registro or not all(k in registro for k in ("fase", "F", "G", "lecturas")):
+            return
+        self.drenado = registro
+        if registro["fase"] == "pausando":  # reinicio en medio de la pausa: es idempotente, se repite
+            registro["fase"] = "verificando_drenado"
+        if registro["fase"] != "verificando_drenado":
+            return
+        try:
+            transcurrido = (datetime.now(timezone.utc) - _parse(registro["abierto_en"])).total_seconds()
+        except (KeyError, ValueError):
+            transcurrido = 0.0
+        registro["reanudado_en"] = _iso(datetime.now(timezone.utc))
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return  # sin event loop (pruebas): se deja cargado, sin reanudar
+        self._lanzar_vigilancia(max(transcurrido, 0.0))
+
+    def cancelar_drenado(self) -> None:
+        if self._tarea_drenado is not None and not self._tarea_drenado.done():
+            self._tarea_drenado.cancel()
 
     def resumen(self) -> Dict[str, Any]:
         fin = self.fin_real or time.time()
@@ -199,6 +312,7 @@ class Corrida:
             "dias_simulados": round(self.t_sim / DIA, 2),
             "estadisticas": self.estadisticas, "publicacion": self.conteo,
             "archivo_no_enviados": self.archivo_no_enviados,
+            "drenado": self.drenado,
         }
 
     def recientes(self) -> Dict[str, list]:

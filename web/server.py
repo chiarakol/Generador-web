@@ -28,6 +28,7 @@ async def ciclo_vida(_app: FastAPI):
     # Render envia SIGTERM al redesplegar o reiniciar: se detiene ordenadamente para drenar etiquetas.
     corrida.detener()
     await corrida.esperar_fin()
+    corrida.cancelar_drenado()
 
 
 app = FastAPI(title="Generador B2B de eventos de fraude", lifespan=ciclo_vida)
@@ -44,6 +45,7 @@ class ParamsInicio(BaseModel):
     dry_run: bool = True
     seed: Optional[int] = None
     horizonte_dias: Optional[float] = Field(default=None, ge=0)
+    reloj_escala: Optional[float] = Field(default=None, gt=0)
     sim_start: Optional[str] = None  # ISO 8601; por defecto continua tras la corrida anterior
 
 
@@ -55,6 +57,12 @@ def salud():
 @app.get("/api/estado")
 def estado():
     return {**corrida.resumen(), "token_configurado": bool(ADMIN_TOKEN)}
+
+
+@app.get("/api/drenado")
+def drenado():
+    """Solo lectura, sin token (como /api/estado). None si la corrida no abrio fase de drenado."""
+    return {"drenado": corrida.drenado}
 
 
 @app.get("/api/recientes")
@@ -71,7 +79,7 @@ async def iniciar(p: ParamsInicio, authorization: Optional[str] = Header(default
         raise HTTPException(401, "Publicar a Event Hub exige configurar ADMIN_TOKEN y enviarlo.")
     try:
         corrida.iniciar(dry_run=p.dry_run, seed=p.seed, horizonte_dias=p.horizonte_dias,
-                        sim_start=p.sim_start)
+                        reloj_escala=p.reloj_escala, sim_start=p.sim_start)
     except ValueError:
         raise HTTPException(400, "sim_start no es una fecha ISO 8601 valida.")
     except RuntimeError as err:
