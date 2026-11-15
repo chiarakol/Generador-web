@@ -80,7 +80,7 @@
   <div class="card" id="limp" hidden>
     <h2>Limpieza del entorno <small id="l-ent"></small></h2>
     <p style="margin:0 0 10px">Borra <b>de forma irreversible</b> las tablas Delta, checkpoints y snapshots del entorno, y sus claves de Redis.
-      Antes pausa los jobs del entorno y cancela sus runs. No vacía los Event Hubs (retención de 1 día). <b>Después hay que ejecutar <code>setup_databricks_job.sh</code></b> para restaurar el modelo de riesgo y el bandit previo.</p>
+      Antes pausa los jobs del entorno y cancela sus runs. No vacía los Event Hubs (retención de 1 día). <b>Conserva</b> en <code>snapshots</code> el modelo de riesgo (<code>modelo_riesgo_v3_portable.json</code>) y el bandit inicial (<code>cads_bandit_v4_inicial.json</code>); si no existen, el paso lo avisa y hay que subirlos antes de levantar el job.</p>
     <div class="row">
       <label>Confirmar: escriba <b id="l-frase"></b> <input type="text" id="l-conf" autocomplete="off"></label>
       <button id="l-btn" style="background:var(--bad)">🗑 Limpiar entorno</button>
@@ -105,6 +105,7 @@ const $ = id => document.getElementById(id);
 const fmt = n => (n ?? 0).toLocaleString('es');
 $('m-seed').style.cursor = 'pointer';
 $('m-seed').onclick = () => { const v = $('m-seed').textContent; if (v !== '-') $('seed').value = v; };
+let advInicio = null;
 let tok = ''; try { tok = sessionStorage.getItem('tok') || ''; } catch (e) {}
 $('tok').value = tok;
 $('tok').addEventListener('input', e => { try { sessionStorage.setItem('tok', e.target.value); } catch (x) {} });
@@ -121,6 +122,7 @@ function num(id) { const v = $(id).value; return v === '' ? null : Number(v); }
 function aviso(t, mal) { $('msg').textContent = t; $('msg').className = mal ? 'err' : ''; }
 
 $('ini').onclick = async () => {
+  if (advInicio && !confirm('⚠ ' + advInicio + ' ¿Iniciar de todos modos?')) return;
   try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
   catch (e) { aviso(e.message, true); }
 };
@@ -153,11 +155,13 @@ function pintarDrenado(d) {
   if (d.fase === 'verificando_drenado' && d.aviso_persistencia) txt.push('⚠ ' + d.aviso_persistencia);
   const p = d.pausa;
   if (p) {
-    if (p.estado === 'pausado') txt.push('Job pausado: ' + (p.jobs || []).map(j => `id ${j.job_id}: ${j.acciones.join(', ')}`).join(' | ')
+    if (p.estado === 'pausado') txt.push('Job pausado: ' + (p.jobs || []).map(j => `${j.nombre || 'id ' + j.job_id}: ${j.acciones.join(', ')}`).join(' | ')
       + (p.completa === false ? ' ⚠ aún había runs activos tras la espera, verifíquelo en Databricks' : ''));
     else if (p.estado === 'error') txt.push('⚠ NO se pudo pausar el job (puede seguir gastando crédito; páuselo a mano en Databricks): ' + p.error);
     else if (p.estado === 'no_aplicada') txt.push('Pausa no aplicada: ' + p.motivo);
   }
+  if (['pausado', 'pausado_incompleto'].includes(d.fase)) txt.push((d.fase === 'pausado_incompleto' ? '⚠ Drenado INCOMPLETO. ' : '') + 'CICLO TERMINADO, jobs detenidos. Para una nueva prueba: 1) 🗑 Limpiar entorno (botón rojo), 2) ▶ Levantar job streaming (botón azul), 3) esperar a que los streams procesen, 4) ▶ Iniciar.');
+  else if (['cumplido', 'tope_agotado', 'error_pausa'].includes(d.fase)) txt.push('⚠ Los jobs NO se detuvieron automáticamente: páuselos en Databricks para no gastar crédito. Luego, para otra prueba: limpiar entorno y levantar el job.');
   if (d.reanudado_en) txt.push('Vigilancia reanudada tras un reinicio (' + d.reanudado_en + ').');
   if (d.error_persistencia) txt.push('⚠ No se pudo guardar el registro: ' + d.error_persistencia);
   if (d.ultimo_error) txt.push('Error: ' + d.ultimo_error);
@@ -184,7 +188,7 @@ function pintarLimpieza(l, bloqueado) {
   });
   const txt = [];
   if (msgAccion) txt.push(msgAccion);
-  if (e?.fase === 'limpio') txt.push('Entorno limpio. ⚠ La limpieza también borró el modelo de riesgo y el bandit previo de snapshots: ANTES de levantar el job ejecute setup_databricks_job.sh <entorno> (los vuelve a subir). Luego levante el job, espere a que los streams procesen y recién entonces inicie la corrida.');
+  if (e?.fase === 'limpio') txt.push('Entorno limpio (el modelo de riesgo y el bandit inicial se conservaron; revise arriba que no haya aviso de archivos faltantes). Levante el job, espere a que los streams procesen y recién entonces inicie la corrida.');
   if (e?.fase === 'limpio_parcial') txt.push('⚠ Limpieza parcial: Redis se omitió (no configurado o inalcanzable). Si existe, límpielo a mano.');
   if (e?.fase === 'error') txt.push('✘ La limpieza se detuvo por un error (arriba). Es repetible; no dé el entorno por limpio.');
   if (l.ultimo_lanzamiento) txt.push(`Job ${l.ultimo_lanzamiento.job} lanzado (run ${l.ultimo_lanzamiento.run_id}, ${l.ultimo_lanzamiento.en}). Espere a que esté en RUNNING antes de iniciar.`);
@@ -208,8 +212,9 @@ async function refrescar() {
     $('est').textContent = s.estado + (s.modo ? ' · ' + s.modo : '');
     $('est').className = 'estado ' + s.estado;
     const drenando = ['verificando_drenado', 'pausando'].includes(s.drenado?.fase);
+    advInicio = s.advertencia_inicio || null;
     $('ini').disabled = activa || drenando;
-    $('ini').title = drenando ? 'Bloqueado: el pipeline aún se está drenando' : '';
+    $('ini').title = drenando ? 'Bloqueado: el pipeline aún se está drenando' : (advInicio || '');
     if (s.mensaje && !$('msg').className) $('msg').textContent = s.mensaje;
     const e = s.estadisticas || {}, p = s.publicacion || {};
     $('m-ev').textContent = fmt(e.eventos_emitidos); $('m-fr').textContent = fmt(e.fraude_real_total);
