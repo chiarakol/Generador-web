@@ -46,7 +46,7 @@ class ParamsInicio(BaseModel):
     dry_run: bool = True
     seed: Optional[int] = None
     horizonte_dias: Optional[float] = Field(default=None, ge=0)
-    reloj_escala: Optional[float] = Field(default=None, gt=0)
+    reloj_escala: Optional[float] = Field(default=None, gt=0)  # solo se acepta 3600 (fija); ver runner.ESCALA_RELOJ_FIJA
     sim_start: Optional[str] = None  # ISO 8601; por defecto continua tras la corrida anterior
 
 

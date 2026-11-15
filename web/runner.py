@@ -27,6 +27,11 @@ from web.limpieza import Limpieza
 from web.prechequeo import Prechequeo
 from web.persistencia import crear_almacen
 
+# Escala del reloj FIJA: segundos simulados por segundo real. DEBE ser igual a la RELOJ_ESCALA del job CAL
+# (la inyecta setup_databricks_job.sh, por defecto 3600); si difieren, el watermark/ventanas de CAL no
+# corresponden al reloj del generador. Por eso NO se puede cambiar ni por la UI, ni por la API, ni por el entorno.
+ESCALA_RELOJ_FIJA = 3600.0
+
 # Holgura entre el fin de una corrida y el inicio simulado de la siguiente.
 MARGEN_ENTRE_CORRIDAS = timedelta(days=1)
 RUTA_ESTADO = os.path.join(config.output_dir, "estado_reloj.json")
@@ -129,8 +134,10 @@ class Corrida:
         cfg.generador.seed = seed if seed is not None else secrets.randbelow(2**31)
         if horizonte_dias is not None:
             cfg.reloj.horizonte_dias = horizonte_dias
-        if reloj_escala is not None:
-            cfg.reloj.escala = reloj_escala
+        if reloj_escala is not None and float(reloj_escala) != ESCALA_RELOJ_FIJA:
+            raise RuntimeError(f"La escala del reloj esta fija en {ESCALA_RELOJ_FIJA:g} y no se puede cambiar "
+                               f"(debe coincidir con la del job CAL); recibido {reloj_escala:g}.")
+        cfg.reloj.escala = ESCALA_RELOJ_FIJA  # ignora RELOJ_ESCALA del entorno: siempre 3600
         # Cada inicio arranca el tiempo simulado DESPUES del fin de la corrida anterior: el reloj
         # nunca retrocede (la ventana/watermark de CAL y la guardia as-of de CADS trabajan sobre
         # el timestamp simulado). Primera corrida: SIM_START del entorno, o `sim_start` explicito.
