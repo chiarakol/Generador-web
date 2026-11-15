@@ -46,9 +46,11 @@
     </div>
     <div class="row" style="margin-top:14px">
       <button id="ini">▶ Iniciar</button>
+      <button id="ver" style="background:var(--acc)" title="Comprueba modelo/bandit, checkpoints de los streams y run activo del job. Solo lee.">🔎 Verificar pipeline</button>
       <span id="est" class="estado">…</span>
     </div>
     <div id="msg"></div>
+    <div id="pre-res" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -121,8 +123,28 @@ async function api(ruta, metodo = 'GET', cuerpo) {
 function num(id) { const v = $(id).value; return v === '' ? null : Number(v); }
 function aviso(t, mal) { $('msg').textContent = t; $('msg').className = mal ? 'err' : ''; }
 
+const NOMBRE_CHECK = { modelo_bandit: 'Modelo de riesgo y bandit', streams: 'Streams arrancados', job_activo: 'Job streaming activo' };
+const ICONO_CHECK = { ok: '✔', falla: '✘', no_verificado: '⚠' };
+// Verificación previa (solo lee). Devuelve la lista de problemas (vacía si todo está ok) o null si no se pudo ejecutar.
+async function verificarPipeline() {
+  $('pre-res').textContent = 'Verificando pipeline…';
+  try {
+    const r = await api('/api/prechequeo');
+    $('pre-res').textContent = '';
+    const cab = document.createElement('div');
+    cab.textContent = r.listo ? '✔ Pipeline listo para iniciar.' : (r.hay_fallas ? '✘ El pipeline NO está listo:' : '⚠ No se pudo comprobar todo:');
+    $('pre-res').appendChild(cab);
+    r.checks.forEach(c => { const d = document.createElement('div'); d.textContent = `${ICONO_CHECK[c.estado] || '·'} ${NOMBRE_CHECK[c.nombre] || c.nombre}: ${c.detalle}`; $('pre-res').appendChild(d); });
+    return r.checks.filter(c => c.estado !== 'ok').map(c => `${NOMBRE_CHECK[c.nombre] || c.nombre}: ${c.detalle}`);
+  } catch (e) { $('pre-res').textContent = '⚠ No se pudo verificar el pipeline: ' + e.message; return ['No se pudo verificar el pipeline: ' + e.message]; }
+}
+$('ver').onclick = () => verificarPipeline();
+
 $('ini').onclick = async () => {
-  if (advInicio && !confirm('⚠ ' + advInicio + ' ¿Iniciar de todos modos?')) return;
+  const avisos = [];
+  if (advInicio) avisos.push(advInicio);
+  if (!$('dry').checked) avisos.push(...(await verificarPipeline()));  // solo al publicar a Event Hub
+  if (avisos.length && !confirm('⚠ Antes de iniciar:\n\n' + avisos.map(a => '• ' + a).join('\n') + '\n\n¿Iniciar de todos modos? (si los streams aún no leen, los eventos publicados se perderán)')) return;
   try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
   catch (e) { aviso(e.message, true); }
 };
@@ -220,6 +242,7 @@ async function refrescar() {
     $('est').className = 'estado ' + s.estado;
     const drenando = ['verificando_drenado', 'pausando'].includes(s.drenado?.fase);
     azureOk = s.azure_habilitado !== false;
+    $('ver').hidden = !azureOk;  // sin Azure no hay nada que verificar
     if (!azureOk) {  // despliegue solo de pruebas (AZURE_HABILITADO=false): se fuerza el modo prueba
       $('dry').checked = true; $('dry').disabled = true;
       $('dry').parentElement.title = 'Azure deshabilitado en este despliegue (AZURE_HABILITADO=false)';
