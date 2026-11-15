@@ -19,7 +19,7 @@
   label.chk { flex-direction:row; align-items:center; gap:8px; color:var(--tx); font-size:.9rem; }
   button { padding:9px 18px; border:0; border-radius:6px; font:inherit; font-weight:600; cursor:pointer; color:#fff; }
   button:disabled { opacity:.4; cursor:not-allowed; }
-  #ini { background:var(--ok); } #det { background:var(--bad); }
+  #ini { background:var(--ok); }
   .estado { display:inline-block; padding:3px 12px; border-radius:99px; font-weight:600; font-size:.85rem; border:1px solid var(--bd); }
   .estado.corriendo { color:var(--ok); } .estado.calentando,.estado.deteniendo { color:var(--warn); } .estado.error { color:var(--bad); }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
@@ -33,7 +33,7 @@
 <body>
 <main>
   <h1>Generador de eventos B2B</h1>
-  <p class="sub">Inicia y detiene la emisión de eventos de fraude sintéticos (T1–T8).</p>
+  <p class="sub">Inicia la emisión de eventos de fraude sintéticos (T1–T8).</p>
 
   <div class="card">
     <h2>Control</h2>
@@ -41,12 +41,11 @@
       <label class="chk"><input type="checkbox" id="dry" checked> Modo prueba (sin Azure)</label>
       <label>Semilla <input type="number" id="seed" placeholder="aleatoria" min="0" step="1"></label>
       <label>Horizonte (días) <input type="number" id="hor" placeholder="env" min="0" step="any"></label>
-      <label>Escala del reloj <input type="number" value="3600" disabled readonly title="Fija en todas las corridas"></label>
+      <label>Escala del reloj <input type="number" id="esc" placeholder="env" min="1" step="any"></label>
       <label>Token <input type="password" id="tok" autocomplete="off"></label>
     </div>
     <div class="row" style="margin-top:14px">
       <button id="ini">▶ Iniciar</button>
-      <button id="det" disabled>■ Detener</button>
       <span id="est" class="estado">…</span>
     </div>
     <div id="msg"></div>
@@ -64,6 +63,18 @@
       <div class="m"><b id="m-pub">0</b><span>publicados (features)</span></div>
       <div class="m"><b id="m-no">0</b><span>no enviados</span></div>
     </div>
+  </div>
+
+  <div class="card" id="dren" hidden>
+    <h2>Drenado del pipeline <small>(solo informativo, no pausa el job)</small></h2>
+    <div class="grid">
+      <div class="m"><b id="d-fase" style="font-size:1rem">-</b><span>fase</span></div>
+      <div class="m"><b id="d-cads">-</b><span id="d-cads-l">CADS (de F)</span></div>
+      <div class="m"><b id="d-ev">-</b><span id="d-ev-l">evaluadas (de G)</span></div>
+      <div class="m"><b id="d-hu">-</b><span>huérfanos (G − evaluadas)</span></div>
+      <div class="m"><b id="d-pe">-</b><span>pendientes Redis</span></div>
+    </div>
+    <div id="d-cond" style="margin-top:10px"></div>
   </div>
 
   <div class="card">
@@ -97,13 +108,41 @@ function num(id) { const v = $(id).value; return v === '' ? null : Number(v); }
 function aviso(t, mal) { $('msg').textContent = t; $('msg').className = mal ? 'err' : ''; }
 
 $('ini').onclick = async () => {
-  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor') }); refrescar(); }
+  try { aviso(''); await api('/api/iniciar', 'POST', { dry_run: $('dry').checked, seed: num('seed'), horizonte_dias: num('hor'), reloj_escala: num('esc') }); refrescar(); }
   catch (e) { aviso(e.message, true); }
 };
-$('det').onclick = async () => {
-  try { aviso(''); await api('/api/detener', 'POST'); refrescar(); }
-  catch (e) { aviso(e.message, true); }
-};
+
+const FASES = { verificando_drenado: 'verificando drenado', cumplido: 'condiciones cumplidas', tope_agotado: 'tope agotado sin cumplir',
+  sin_lector: 'sin lector configurado', error: 'error de configuración', pausando: 'pausando el job…',
+  pausado: 'job pausado', pausado_incompleto: 'job pausado (drenado INCOMPLETO)', error_pausa: 'ERROR al pausar el job' };
+function pintarDrenado(d) {
+  $('dren').hidden = !d;
+  if (!d) return;
+  const l = (d.lecturas || []).slice(-1)[0] || {};
+  const v = x => (x === null || x === undefined) ? 'n/d' : fmt(x);
+  $('d-fase').textContent = (FASES[d.fase] || d.fase) + (d.parcial ? ' (parcial: sin Redis)' : '');
+  $('d-cads').textContent = v(l.cads); $('d-cads-l').textContent = 'CADS (de F = ' + fmt(d.F) + ')';
+  $('d-ev').textContent = v(l.evaluadas); $('d-ev-l').textContent = 'evaluadas (de G = ' + fmt(d.G) + ')';
+  $('d-hu').textContent = v(l.huerfanos); $('d-pe').textContent = v(l.pendientes);
+  const c = l.condiciones, ok = x => x === null ? 'n/d' : (x ? '✔' : '✘');
+  const txt = [];
+  if (c) txt.push(`a) CADS = F ${ok(c.a_cads_igual_F)} · b) evaluadas estable ${ok(c.b_evaluadas_estable)} · c) pendientes ≈ 0 ${ok(c.c_pendientes_cero)}`);
+  else if (d.fase === 'verificando_drenado') txt.push('Esperando una segunda lectura para evaluar condiciones…');
+  txt.push('Lecturas: ' + (d.lecturas || []).length);
+  (l.avisos || []).forEach(a => txt.push('Aviso: ' + a));
+  if (d.fase === 'verificando_drenado' && d.aviso_persistencia) txt.push('⚠ ' + d.aviso_persistencia);
+  const p = d.pausa;
+  if (p) {
+    if (p.estado === 'pausado') txt.push('Job pausado: ' + (p.jobs || []).map(j => `id ${j.job_id}: ${j.acciones.join(', ')}`).join(' | ')
+      + (p.completa === false ? ' ⚠ aún había runs activos tras la espera, verifíquelo en Databricks' : ''));
+    else if (p.estado === 'error') txt.push('⚠ NO se pudo pausar el job (puede seguir gastando crédito; páuselo a mano en Databricks): ' + p.error);
+    else if (p.estado === 'no_aplicada') txt.push('Pausa no aplicada: ' + p.motivo);
+  }
+  if (d.reanudado_en) txt.push('Vigilancia reanudada tras un reinicio (' + d.reanudado_en + ').');
+  if (d.error_persistencia) txt.push('⚠ No se pudo guardar el registro: ' + d.error_persistencia);
+  if (d.ultimo_error) txt.push('Error: ' + d.ultimo_error);
+  $('d-cond').textContent = txt.join(' — ');
+}
 
 async function refrescar() {
   try {
@@ -111,7 +150,9 @@ async function refrescar() {
     const activa = ['calentando', 'corriendo', 'deteniendo'].includes(s.estado);
     $('est').textContent = s.estado + (s.modo ? ' · ' + s.modo : '');
     $('est').className = 'estado ' + s.estado;
-    $('ini').disabled = activa; $('det').disabled = !activa || s.estado === 'deteniendo';
+    const drenando = ['verificando_drenado', 'pausando'].includes(s.drenado?.fase);
+    $('ini').disabled = activa || drenando;
+    $('ini').title = drenando ? 'Bloqueado: el pipeline aún se está drenando' : '';
     if (s.mensaje && !$('msg').className) $('msg').textContent = s.mensaje;
     const e = s.estadisticas || {}, p = s.publicacion || {};
     $('m-ev').textContent = fmt(e.eventos_emitidos); $('m-fr').textContent = fmt(e.fraude_real_total);
@@ -120,6 +161,7 @@ async function refrescar() {
     $('m-dias').textContent = s.dias_simulados; $('m-seg').textContent = s.segundos_reales;
     $('m-pub').textContent = fmt(p.features?.publicados);
     $('m-no').textContent = fmt((p.features?.no_enviados || 0) + (p.ground_truth?.no_enviados || 0));
+    pintarDrenado(s.drenado);
     const f = e.fraude_real_por_tipologia || {}, c = e.campanas_lanzadas || {};
     $('tipos').innerHTML = Object.keys({ ...f, ...c }).map(k => `<tr><td>${k}</td><td class="n">${fmt(f[k])}</td><td class="n">${fmt(c[k])}</td></tr>`).join('');
     if (s.modo && s.modo.startsWith('prueba')) {
