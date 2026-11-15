@@ -14,6 +14,9 @@ Variables (en Render; nunca en el repo):
                                 limpieza queda no disponible (la credencial de lectura del drenado
                                 es otra: STORAGE_CONN_STRING).
   LIMPIEZA_PERMITE_TESIS        true para permitir limpiar PIPELINE_ENTORNO=tesis (defecto false)
+  LIMPIEZA_CONSERVAR            opcional, nombres separados por coma que NO se borran de
+                                snapshots/{entorno}/ (defecto: modelo_riesgo_v3_portable.json,
+                                cads_bandit_v4_inicial.json)
   NOMBRES_JOBS_PAUSA            opcional, separados por coma; por defecto
                                 NOMBRE_JOB_STREAMING, capa4-dtro-{entorno}, capa5-shap-lite-{entorno}
 Ademas usa PIPELINE_ENTORNO, DATABRICKS_HOST/TOKEN y REDIS_HOST/REDIS_KEY (opcional)."""
@@ -23,10 +26,14 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
-from web.databricks import ClienteDatabricks, _bool_env, crear_cliente_desde_entorno
+from web.databricks import ClienteDatabricks, _bool_env, crear_cliente_desde_entorno, crear_clientes_pausa
 from web.lectores import crear_cliente_redis, entorno_desde_env
 
 CONTENEDORES = ("delta", "snapshots")
+# Entradas ESTATICAS (no estado de una corrida) que sube setup_databricks_job.sh a snapshots/{entorno}/:
+# la limpieza NO las borra, para no tener que volver a subirlas a mano. El estado aprendido
+# (p. ej. cads_bandit_v4.pkl, grafo, baseline DTRO) SI se borra.
+CONSERVAR_DEFECTO = ("modelo_riesgo_v3_portable.json", "cads_bandit_v4_inicial.json")
 PASOS = ("pausar_jobs", "borrar_delta", "borrar_snapshots", "borrar_redis", "verificar")
 FRASE_TESIS = "BORRAR TESIS"
 
@@ -71,6 +78,15 @@ class Limpieza:
         """Falla fuerte al arrancar si la configuracion de limpieza es invalida."""
         _bool_env("LIMPIEZA_PERMITE_TESIS", False)
 
+    def conservar(self, entorno: str) -> set:
+        """Rutas completas (en snapshots) que la limpieza respeta."""
+        crudo = os.getenv("LIMPIEZA_CONSERVAR", "").strip()
+        nombres = [n.strip() for n in crudo.split(",") if n.strip()] if crudo else list(CONSERVAR_DEFECTO)
+        for n in nombres:
+            if "/" in n or n in (".", ".."):
+                raise ErrorLimpieza(f"LIMPIEZA_CONSERVAR solo admite nombres de archivo, no rutas: {n!r}")
+        return {f"{entorno}/{n}" for n in nombres}
+
     def _contenedor_real(self, nombre: str):
         from azure.storage.blob import ContainerClient
         conn = os.getenv("LIMPIEZA_STORAGE_CONN_STRING", "").strip()
@@ -82,15 +98,10 @@ class Limpieza:
             raise ErrorLimpieza("LIMPIEZA_STORAGE_CONN_STRING no es un connection string valido.")
 
     def _clientes_reales(self, entorno: str) -> List[ClienteDatabricks]:
-        crudo = os.getenv("NOMBRES_JOBS_PAUSA", "").strip()
-        if crudo:
-            nombres = [n.strip() for n in crudo.split(",") if n.strip()]
-        else:
-            stream = os.getenv("NOMBRE_JOB_STREAMING", "").strip()
-            if not stream:
-                raise ErrorLimpieza("Falta NOMBRE_JOB_STREAMING (o NOMBRES_JOBS_PAUSA).")
-            nombres = [stream, f"capa4-dtro-{entorno}", f"capa5-shap-lite-{entorno}"]
-        return [crear_cliente_desde_entorno(n) for n in nombres]
+        try:
+            return crear_clientes_pausa(entorno)
+        except ValueError as err:
+            raise ErrorLimpieza(str(err))
 
     # -- API --------------------------------------------------------------------------------------
     def resumen(self) -> Dict[str, Any]:
@@ -169,9 +180,11 @@ class Limpieza:
         prefijo = f"{entorno}/"
         cont = self.fabrica_contenedor(nombre)
         # Hijos antes que padres (cuentas con namespace jerarquico listan tambien carpetas).
-        blobs = sorted((b.name for b in cont.list_blobs(name_starts_with=prefijo)), reverse=True)
-        if any(not n.startswith(prefijo) for n in blobs):
+        existentes = [b.name for b in cont.list_blobs(name_starts_with=prefijo)]
+        if any(not n.startswith(prefijo) for n in existentes):
             raise ErrorLimpieza("El listado devolvio blobs fuera del prefijo; se aborta por seguridad.")
+        conservar = self.conservar(entorno) if nombre == "snapshots" else set()
+        blobs = sorted((n for n in existentes if not self._protegido(n, prefijo, conservar)), reverse=True)
 
         def borrar(n: str) -> None:
             try:
@@ -181,7 +194,22 @@ class Limpieza:
                     raise
         with ThreadPoolExecutor(max_workers=8) as pool:
             list(pool.map(borrar, blobs))
-        return f"{nombre}/{prefijo}*: {len(blobs)} blob(s) borrados"
+        detalle = f"{nombre}/{prefijo}*: {len(blobs)} blob(s) borrados"
+        if conservar:
+            presentes = sorted(n for n in conservar if n in existentes)
+            faltan = sorted(n for n in conservar if n not in existentes)
+            detalle += f"; conservados: {', '.join(p.split('/', 1)[1] for p in presentes) or 'ninguno'}"
+            if faltan:
+                detalle += f" | ⚠ NO existen en snapshots (subalos antes de levantar el job): {', '.join(f.split('/', 1)[1] for f in faltan)}"
+        return detalle
+
+    @staticmethod
+    def _protegido(nombre_blob: str, prefijo: str, conservar: set) -> bool:
+        """No se borra: los archivos a conservar ni el marcador de carpeta del prefijo o de sus padres
+        (en cuentas con namespace jerarquico borrar la carpeta se llevaria los archivos conservados)."""
+        if nombre_blob in conservar or nombre_blob.rstrip("/") == prefijo.rstrip("/"):
+            return True
+        return any(c.startswith(nombre_blob.rstrip("/") + "/") for c in conservar)
 
     def _borrar_redis(self, entorno: str):
         patron = f"{entorno}:*"
@@ -203,7 +231,9 @@ class Limpieza:
         quedan = []
         for nombre in CONTENEDORES:
             cont = self.fabrica_contenedor(nombre)
-            n = sum(1 for _ in cont.list_blobs(name_starts_with=prefijo))
+            conservar = self.conservar(entorno) if nombre == "snapshots" else set()
+            n = sum(1 for b in cont.list_blobs(name_starts_with=prefijo)
+                    if not self._protegido(b.name, prefijo, conservar))
             if n:
                 quedan.append(f"{nombre}/{prefijo}: {n} blob(s)")
         if not omitido_redis:
@@ -213,7 +243,7 @@ class Limpieza:
                 quedan.append(f"Redis {entorno}:*: {n} clave(s)")
         if quedan:
             raise ErrorLimpieza("Quedan restos, no dar el entorno por limpio: " + "; ".join(quedan))
-        return f"nada con el prefijo '{prefijo}' en delta/snapshots" + ("" if omitido_redis else f" ni claves '{entorno}:*'")
+        return f"nada con el prefijo '{prefijo}' en delta/snapshots (salvo lo conservado)" + ("" if omitido_redis else f" ni claves '{entorno}:*'")
 
     # -- levantar el job (accion separada, nunca automatica) --------------------------------------
     async def lanzar_job(self, confirmar: str, bloqueo: Optional[str]) -> Dict[str, Any]:

@@ -130,6 +130,40 @@ class ClienteDatabricks:
         return await asyncio.to_thread(self.pausar)  # urllib es sincrono: fuera del event loop
 
 
+def pausar_todos(clientes: List["ClienteDatabricks"]) -> Dict[str, Any]:
+    """Pausa varios jobs. El PRIMERO (el streaming) debe existir; los demas se omiten si no existen,
+    como hace la limpieza. Devuelve {"jobs": [{nombre, job_id, acciones}], "completa": bool}."""
+    jobs: List[Dict[str, Any]] = []
+    completa = True
+    for i, c in enumerate(clientes):
+        r = c.pausar(omitir_inexistente=i > 0)
+        if r.get("inexistente"):
+            jobs.append({"nombre": c.nombre_job, "job_id": None, "acciones": ["no existe (nada que pausar)"]})
+            continue
+        completa = completa and r["completa"]
+        jobs.extend({"nombre": c.nombre_job, **j} for j in r["jobs"])
+    return {"jobs": jobs, "completa": completa}
+
+
+async def pausar_todos_async(clientes: List["ClienteDatabricks"]) -> Dict[str, Any]:
+    return await asyncio.to_thread(pausar_todos, clientes)
+
+
+def crear_clientes_pausa(entorno: str) -> List["ClienteDatabricks"]:
+    """Los jobs que se detienen al cerrar un ciclo y al limpiar (mismos que el script original).
+    NOMBRES_JOBS_PAUSA (coma) los reemplaza; el primero es el streaming y debe existir.
+    Por defecto: NOMBRE_JOB_STREAMING, capa4-dtro-{entorno}, capa5-shap-lite-{entorno}."""
+    crudo = os.getenv("NOMBRES_JOBS_PAUSA", "").strip()
+    if crudo:
+        nombres = [n.strip() for n in crudo.split(",") if n.strip()]
+    else:
+        stream = os.getenv("NOMBRE_JOB_STREAMING", "").strip()
+        if not stream:
+            raise ValueError("Falta la variable de entorno NOMBRE_JOB_STREAMING (o NOMBRES_JOBS_PAUSA).")
+        nombres = [stream, f"capa4-dtro-{entorno}", f"capa5-shap-lite-{entorno}"]
+    return [crear_cliente_desde_entorno(n) for n in nombres]
+
+
 def _bool_env(nombre: str, defecto: bool) -> bool:
     crudo = os.getenv(nombre, "").strip().lower()
     if crudo == "":

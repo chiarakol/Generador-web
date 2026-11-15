@@ -20,7 +20,8 @@ from src.producer.eventhub_producer import EventHubPublisher, Publisher, Resulta
 from src.simulador.motor import Simulador
 from src.simulador.reloj import DIA
 from web.drenado import crear_lector, medir_baseline, modo_lector, parametros_desde_entorno, vigilar
-from web.databricks import crear_cliente_desde_entorno, pausa_activada
+from web.databricks import crear_clientes_pausa, pausa_activada, pausar_todos_async
+from web.lectores import entorno_desde_env
 from web.limpieza import Limpieza
 from web.persistencia import crear_almacen
 
@@ -77,7 +78,8 @@ class Corrida:
         self.limpieza.validar_arranque()  # falla fuerte al arrancar si LIMPIEZA_* es invalida
         parametros_desde_entorno()  # falla fuerte al arrancar si DRENADO_* es invalida
         # Pausa del job: apagada por defecto. Con DRENADO_PAUSAR=true exige las variables de Databricks.
-        self._cliente_db = crear_cliente_desde_entorno() if pausa_activada() else None
+        # Detiene los TRES jobs del entorno (streaming + DTRO + SHAP-lite), igual que la limpieza.
+        self._clientes_pausa = crear_clientes_pausa(entorno_desde_env()) if pausa_activada() else None
         self._reiniciar()
         self._tarea: Optional[asyncio.Task] = None
         self._fin_simulado: Optional[datetime] = _leer_fin_anterior()
@@ -249,7 +251,7 @@ class Corrida:
             "abierto_en": _iso(datetime.now(timezone.utc)),
             "persistencia": self._almacen.descripcion,
             "aviso_persistencia": self._almacen.aviso,
-            "pausa_automatica": self._cliente_db is not None,
+            "pausa_automatica": self._clientes_pausa is not None,
             "baseline": self._baseline,  # None = sin baseline: conteos absolutos (ver baseline_error)
             "lecturas": [],  # una entrada por lectura (cads, evaluadas, pendientes, huerfanos)
         }
@@ -269,7 +271,7 @@ class Corrida:
                 self._tarea_drenado = asyncio.create_task(
                     vigilar(registro, lector, transcurrido_s=transcurrido_s,
                             guardar=self._guardar_drenado_async,
-                            pausar=self._cliente_db.pausar_async if self._cliente_db else None,
+                            pausar=(lambda: pausar_todos_async(self._clientes_pausa)) if self._clientes_pausa else None,
                             **parametros_desde_entorno()))
                 self._tarea_drenado.add_done_callback(lambda t: self._vigilancia_terminada(registro, t))
         except Exception as err:  # noqa: BLE001 -- configuracion invalida: se informa en la API
@@ -327,6 +329,19 @@ class Corrida:
             return  # sin event loop (pruebas): se deja cargado, sin reanudar
         self._lanzar_vigilancia(max(transcurrido, 0.0))
 
+    def advertencia_inicio(self) -> Optional[str]:
+        """Aviso (NO bloqueo) si el ciclo anterior ya termino y no se limpio el entorno despues.
+        Iniciar sobre un entorno sucio mezcla datos viejos con los de la corrida nueva."""
+        d = self.drenado
+        if not d or d.get("fase") in ("verificando_drenado", "pausando"):
+            return None
+        est = self.limpieza.estado
+        if est and est.get("fase") in ("limpio", "limpio_parcial") and (est.get("fin") or "") > d.get("abierto_en", ""):
+            return None
+        return ("El ciclo anterior ya termino y no se ha limpiado el entorno desde entonces. Para una nueva prueba: "
+                "1) Limpiar entorno, 2) Levantar job streaming, 3) esperar a que los streams procesen. "
+                "Iniciar sin hacerlo mezcla datos viejos con los nuevos.")
+
     def bloqueo_limpieza(self) -> Optional[str]:
         """Motivo por el que NO se puede limpiar el entorno / levantar el job ahora (None = se puede)."""
         if self.activa:
@@ -349,6 +364,7 @@ class Corrida:
             "archivo_no_enviados": self.archivo_no_enviados,
             "drenado": self.drenado,
             "limpieza": self.limpieza.resumen(),
+            "advertencia_inicio": self.advertencia_inicio(),
         }
 
     def recientes(self) -> Dict[str, list]:
